@@ -152,3 +152,160 @@ input, select, textarea {
   color: rgba(30, 42, 74, 0.5);
   text-decoration: line-through;
 }
+
+/* Today highlight */
+.today-highlight {
+  background: linear-gradient(135deg, rgba(192, 48, 40, 0.06) 0%, rgba(192, 48, 40, 0.02) 100%);
+  border-left: 4px solid var(--vermillion);
+}
+
+.today-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: var(--vermillion);
+  color: var(--cream);
+}
+
+/* Pinned item indicator */
+.pinned-item {
+  border-left: 3px solid var(--gold);
+  background: linear-gradient(90deg, rgba(184, 146, 61, 0.05) 0%, transparent 100%);
+}
+
+/* Sub-items / nested places */
+.subitem-list {
+  margin-top: 8px;
+  padding-left: 8px;
+  border-left: 1px dashed rgba(30, 42, 74, 0.2);
+}
+
+/* Booked-for-today section */
+.booked-section {
+  background: linear-gradient(135deg, rgba(30, 42, 74, 0.04) 0%, rgba(192, 48, 40, 0.02) 100%);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+/* Greyed-out feature in guide */
+.feature-unused {
+  opacity: 0.5;
+  filter: grayscale(0.4);
+}
+
+/* Day rating stars */
+.star-btn {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+/* Quick-add FAB */
+.fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--vermillion);
+  color: var(--cream);
+  border: none;
+  box-shadow: 0 4px 16px rgba(192, 48, 40, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  transition: transform 0.2s;
+}
+.fab:active { transform: scale(0.92); }
+
+/* Search highlight */
+.search-result {
+  background: rgba(184, 146, 61, 0.1);
+}
+
+/* Filter pill */
+.filter-pill {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid rgba(30, 42, 74, 0.15);
+  background: white;
+  color: var(--sumi-soft);
+  cursor: pointer;
+}
+.filter-pill.active {
+  background: var(--indigo);
+  color: var(--cream);
+  border-color: var(--indigo);
+}
+
+/* Two-state checkbox row for packing */
+.dual-check {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.dual-check button {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: transparent;
+}
+.dual-check .check-got {
+  border-color: var(--indigo);
+}
+.dual-check .check-got.on {
+  background: var(--indigo);
+  color: var(--cream);
+}
+.dual-check .check-pack {
+  border-color: #2d8659;
+}
+.dual-check .check-pack.on {
+  background: #2d8659;
+  color: var(--cream);
+}
+.dual-check button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Times bar */
+.times-bar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 0;
+  margin-bottom: 12px;
+}
+.times-bar::-webkit-scrollbar { display: none; }
+.time-pill {
+  flex-shrink: 0;
+  background: white;
+  border: 1px solid rgba(30, 42, 74, 0.15);
+  border-radius: 10px;
+  padding: 6px 10px;
+  min-width: 70px;
+  text-align: center;
+}
+.time-pill .t { font-size: 11px; font-weight: 700; color: var(--vermillion); }
+.time-pill .l { font-size: 9px; color: var(--sumi-soft); margin-top: 2px; line-height: 1.2; }
