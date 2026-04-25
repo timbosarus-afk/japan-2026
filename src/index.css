@@ -1,0 +1,154 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --indigo: #1e2a4a;
+  --indigo-deep: #141d35;
+  --vermillion: #c03028;
+  --vermillion-deep: #96241d;
+  --cream: #f5ede0;
+  --cream-warm: #ede2cf;
+  --paper: #faf4e8;
+  --sumi: #2a2420;
+  --sumi-soft: #4a4238;
+  --gold: #b8923d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Shippori Mincho', 'Noto Serif JP', Georgia, serif;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  background-color: var(--cream);
+  color: var(--sumi);
+}
+
+.sans {
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+
+.jp {
+  font-family: 'Noto Sans JP', sans-serif;
+}
+
+/* Subtle paper texture */
+.paper-tex {
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(30, 42, 74, 0.04) 1px, transparent 0),
+    radial-gradient(circle at 12px 7px, rgba(192, 48, 40, 0.025) 1px, transparent 0);
+  background-size: 24px 24px, 24px 14px;
+}
+
+/* Asanoha (hemp leaf) subtle pattern - traditional Japanese */
+.asanoha {
+  background-image:
+    linear-gradient(60deg, rgba(30, 42, 74, 0.04) 25%, transparent 25.5%, transparent 75%, rgba(30, 42, 74, 0.04) 75.5%),
+    linear-gradient(-60deg, rgba(30, 42, 74, 0.04) 25%, transparent 25.5%, transparent 75%, rgba(30, 42, 74, 0.04) 75.5%);
+  background-size: 32px 28px;
+  background-position: 0 0, 16px 14px;
+}
+
+.btn-primary {
+  background: var(--indigo);
+  color: var(--cream);
+  transition: all 0.2s;
+}
+.btn-primary:hover { background: var(--indigo-deep); }
+.btn-primary:active { transform: scale(0.97); }
+
+.btn-accent {
+  background: var(--vermillion);
+  color: var(--cream);
+  transition: all 0.2s;
+}
+.btn-accent:hover { background: var(--vermillion-deep); }
+.btn-accent:active { transform: scale(0.97); }
+
+.card-shadow {
+  box-shadow: 0 2px 16px rgba(30, 42, 74, 0.08), 0 1px 2px rgba(30, 42, 74, 0.04);
+}
+
+.card-shadow-lg {
+  box-shadow: 0 6px 32px rgba(30, 42, 74, 0.12), 0 2px 4px rgba(30, 42, 74, 0.06);
+}
+
+/* Seal / stamp effect */
+.stamp {
+  border: 2px solid var(--vermillion);
+  color: var(--vermillion);
+  font-weight: 600;
+  transform: rotate(-3deg);
+  letter-spacing: 0.15em;
+  background: rgba(192, 48, 40, 0.04);
+}
+
+/* Traditional dashed divider */
+.divider {
+  background: repeating-linear-gradient(90deg, var(--indigo) 0, var(--indigo) 4px, transparent 4px, transparent 10px);
+  height: 1px;
+  opacity: 0.25;
+}
+
+.divider-bold {
+  background: repeating-linear-gradient(90deg, var(--vermillion) 0, var(--vermillion) 6px, transparent 6px, transparent 12px);
+  height: 2px;
+  opacity: 0.6;
+}
+
+/* Vertical indigo accent line */
+.accent-line {
+  border-left: 3px solid var(--vermillion);
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeUp 0.35s ease-out backwards; }
+
+/* Scrollbar styling for nav */
+.hide-scroll::-webkit-scrollbar { display: none; }
+.hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Form elements */
+input, select, textarea {
+  font-family: 'Inter', sans-serif;
+}
+
+/* Status chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.chip-confirmed {
+  background: rgba(30, 42, 74, 0.1);
+  color: var(--indigo);
+}
+
+.chip-tbd {
+  background: rgba(184, 146, 61, 0.15);
+  color: #8a6b26;
+}
+
+.chip-urgent {
+  background: rgba(192, 48, 40, 0.12);
+  color: var(--vermillion-deep);
+}
+
+.chip-done {
+  background: rgba(30, 42, 74, 0.06);
+  color: rgba(30, 42, 74, 0.5);
+  text-decoration: line-through;
+}
