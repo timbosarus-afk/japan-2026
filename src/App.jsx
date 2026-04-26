@@ -3,8 +3,8 @@ import {
   Plane, MapPin, Utensils, Ticket, Car, Hotel, Phone, Edit3, Trash2, Plus, X, Save,
   ChevronLeft, ChevronDown, ChevronRight, ChevronUp, Luggage, FileText, Cloud, CloudOff,
   CheckCircle2, AlertCircle, Clock, Baby, Paperclip, Upload, Calendar, Home, ListChecks,
-  BookOpen, Search, Star, Pin, ExternalLink, Lightbulb, Heart, ShoppingBag, Settings, HelpCircle,
-  ArrowRight, Coins
+  BookOpen, Search, Star, Pin, ExternalLink, Lightbulb, Heart, Settings, HelpCircle,
+  ArrowRight, Coins, Type, Moon, Sun, Sparkles, User, Briefcase
 } from 'lucide-react';
 import { supabase, TRIP_ID, uploadFile, deleteFile } from './supabase';
 import { TRIP_DATA } from './tripData';
@@ -12,15 +12,8 @@ import { saveCache, loadCache, isOnline } from './offline';
 import { getRates, toGBP, formatGBP, formatCurrency } from './fx';
 
 const ICONS = {
-  flight: Plane,
-  hotel: Hotel,
-  restaurant: Utensils,
-  activity: Ticket,
-  transport: Car,
-  place: MapPin,
-  document: FileText,
-  contact: Phone,
-  note: BookOpen,
+  flight: Plane, hotel: Hotel, restaurant: Utensils, activity: Ticket,
+  transport: Car, place: MapPin, document: FileText, contact: Phone, note: BookOpen,
 };
 
 const TODAY = () => new Date().toISOString().slice(0, 10);
@@ -61,7 +54,18 @@ const TABS = [
   { id: 'guide', label: 'Guide', Icon: HelpCircle },
 ];
 
-// Migrate old data into new shape (defensive — handles seeded-from-old DB)
+const DEFAULT_BAGS = [
+  { id: 'bag_yellow', name: 'Yellow case', owner: 'TM', icon: '🟡' },
+  { id: 'bag_white', name: 'White case', owner: 'TM', icon: '⬜' },
+  { id: 'bag_black', name: "Black case (Tim's)", owner: 'TM', icon: '⬛' },
+  { id: 'bag_blue', name: "Blue case (Aiden's)", owner: 'TM', icon: '💙' },
+  { id: 'bag_nappy', name: 'Nappy bag', owner: 'TM', icon: '👶' },
+  { id: 'bag_tim_carry', name: "Tim's carry-on", owner: 'TM', icon: '🎒' },
+  { id: 'bag_michelle_carry', name: "Michelle's carry-on", owner: 'TM', icon: '👜' },
+  { id: 'bag_onday', name: 'On the day', owner: 'TM', icon: '✈️' },
+];
+
+// Migrate old data into new shape
 function migrate(data) {
   if (!data) return data;
   const d = { ...data };
@@ -69,6 +73,25 @@ function migrate(data) {
   d.dayBagTemplate = d.dayBagTemplate || [];
   d.expenses = d.expenses || [];
   d.fxRates = d.fxRates || null;
+  d.bags = d.bags && d.bags.length > 0 ? d.bags : DEFAULT_BAGS;
+  d.theme = d.theme || 'auto';
+  d.predepTasks = d.predepTasks || { tim: [], michelle: [] };
+
+  // Migrate notes from string to per-person object
+  if (typeof d.notes === 'string') {
+    d.notes = { shared: d.notes, tim: '', michelle: '', caroline: '', david: '' };
+  } else if (!d.notes || typeof d.notes !== 'object') {
+    d.notes = { shared: '', tim: '', michelle: '', caroline: '', david: '' };
+  } else {
+    d.notes = {
+      shared: d.notes.shared || '',
+      tim: d.notes.tim || '',
+      michelle: d.notes.michelle || '',
+      caroline: d.notes.caroline || '',
+      david: d.notes.david || '',
+    };
+  }
+
   d.bookings = (d.bookings || []).map(b => ({ ...b, date: b.date || '', files: b.files || [] }));
   d.days = (d.days || []).map(day => ({
     ...day,
@@ -79,16 +102,45 @@ function migrate(data) {
     diary: day.diary || '',
     dayBagExtras: day.dayBagExtras || [],
     dayBagDone: day.dayBagDone || {},
-    items: (day.items || []).map(it => ({ ...it, places: it.places || [], files: it.files || [] })),
+    items: (day.items || []).map(it => ({
+      ...it,
+      places: it.places || [],
+      files: it.files || [],
+      owner: it.owner || 'EVERYONE',
+    })),
   }));
+
+  // Packing T&M — migrate from old single list if needed
   d.packing = (d.packing || []).map(p => {
     if (typeof p.gotIt === 'undefined' && typeof p.packed === 'undefined') {
-      // Old schema with single `done`
-      return { id: p.id, text: p.text, gotIt: !!p.done, packed: !!p.done };
+      return { id: p.id, text: p.text, gotIt: !!p.done, packed: !!p.done, owner: 'TM', bagId: p.bagId || 'bag_tim_carry' };
     }
-    return p;
+    return { ...p, owner: p.owner || 'TM', bagId: p.bagId || 'bag_tim_carry' };
   });
+  d.packingCD = (d.packingCD || []).map(p => ({ ...p, owner: 'CD', bagId: p.bagId || '' }));
+
   return d;
+}
+
+// Theme effect — applies data-theme + data-large-text to html element
+function useTheme(theme, largeText) {
+  useEffect(() => {
+    const html = document.documentElement;
+    html.dataset.theme = theme || 'auto';
+    html.dataset.largeText = largeText ? 'on' : 'off';
+  }, [theme, largeText]);
+}
+
+// Read large text preference from localStorage (per-device, not synced)
+function useLargeText() {
+  const [largeText, setLargeText] = useState(() => {
+    try { return localStorage.getItem('japan-2026-large-text') === 'on'; } catch { return false; }
+  });
+  const set = (v) => {
+    setLargeText(v);
+    try { localStorage.setItem('japan-2026-large-text', v ? 'on' : 'off'); } catch {}
+  };
+  return [largeText, set];
 }
 
 export default function App() {
@@ -96,17 +148,20 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState('overview');
   const [activeDay, setActiveDay] = useState(null);
+  const [activeItem, setActiveItem] = useState(null); // { dayId, itemId }
   const [syncState, setSyncState] = useState('idle');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [todayMode, setTodayMode] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [largeText, setLargeText] = useLargeText();
   const saveTimer = useRef(null);
 
-  // ----- Initial load -----
+  useTheme(data.theme, largeText);
+
   useEffect(() => {
     (async () => {
-      // Try Supabase first
       try {
         if (isOnline()) {
           const { data: row, error } = await supabase
@@ -117,7 +172,6 @@ export default function App() {
             setData(migrated);
             saveCache(migrated);
           } else {
-            // Seed fresh
             await supabase.from('trips').insert({ id: TRIP_ID, data: TRIP_DATA });
             setData(TRIP_DATA);
             saveCache(TRIP_DATA);
@@ -126,7 +180,6 @@ export default function App() {
           throw new Error('offline');
         }
       } catch (e) {
-        // Fall back to cache
         const cached = loadCache();
         if (cached?.data) {
           setData(migrate(cached.data));
@@ -138,8 +191,7 @@ export default function App() {
       setLoaded(true);
     })();
 
-    // Listen for online/offline
-    const onOnline = () => { setSyncState('idle'); /* could trigger sync */ };
+    const onOnline = () => setSyncState('idle');
     const onOffline = () => setSyncState('error');
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
@@ -149,7 +201,6 @@ export default function App() {
     };
   }, []);
 
-  // ----- Persistence -----
   const persist = (newData) => {
     setData(newData);
     saveCache(newData);
@@ -175,38 +226,33 @@ export default function App() {
   const today = TODAY();
   const todayDay = data.days.find(d => d.date === today);
   const onTrip = todayDay !== undefined;
-
-  // Find current hotel based on today
   const currentHotel = data.accommodation.find(h => today >= h.checkIn && today < h.checkOut);
 
-  // ---- Search ----
+  // Search
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const q = searchQuery.toLowerCase();
     const results = [];
-    // Days
-    data.days.forEach(d => {
-      if (d.title.toLowerCase().includes(q) || d.summary.toLowerCase().includes(q)) {
-        results.push({ type: 'day', label: `${fmtDate(d.date)} · ${d.title}`, dayId: d.id });
+    data.days.forEach(day => {
+      if (day.title.toLowerCase().includes(q) || day.summary.toLowerCase().includes(q)) {
+        results.push({ type: 'day', label: `${fmtDate(day.date)} · ${day.title}`, dayId: day.id });
       }
-      d.items.forEach(it => {
+      day.items.forEach(it => {
         if (it.title.toLowerCase().includes(q) || (it.note || '').toLowerCase().includes(q)) {
-          results.push({ type: 'item', label: it.title, sub: `${fmtDate(d.date)} · ${d.title}`, dayId: d.id });
+          results.push({ type: 'item', label: it.title, sub: `${fmtDate(day.date)} · ${day.title}`, dayId: day.id, itemId: it.id });
         }
         (it.places || []).forEach(p => {
           if (p.name.toLowerCase().includes(q) || (p.note || '').toLowerCase().includes(q)) {
-            results.push({ type: 'place', label: p.name, sub: `In ${it.title} · ${fmtDate(d.date)}`, dayId: d.id, mapUrl: p.mapUrl });
+            results.push({ type: 'place', label: p.name, sub: `In ${it.title} · ${fmtDate(day.date)}`, dayId: day.id });
           }
         });
       });
     });
-    // Bookings
-    data.bookings?.forEach(b => {
+    (data.bookings || []).forEach(b => {
       if (b.title.toLowerCase().includes(q) || (b.notes || '').toLowerCase().includes(q)) {
         results.push({ type: 'booking', label: b.title, sub: 'Bookings', tab: 'bookings' });
       }
     });
-    // Flights, hotels, contacts, docs
     data.flights.forEach(f => {
       if ((f.airline + ' ' + f.flightNo + ' ' + f.from + ' ' + f.to).toLowerCase().includes(q)) {
         results.push({ type: 'flight', label: `${f.airline} ${f.flightNo}`, sub: 'Travel', tab: 'travel' });
@@ -221,43 +267,47 @@ export default function App() {
     return results.slice(0, 30);
   }, [searchQuery, data]);
 
+  const navigateToItem = (dayId, itemId) => {
+    setTab('days');
+    setActiveDay(dayId);
+    setActiveItem({ dayId, itemId });
+  };
+
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--cream)' }}>
-      <header className="sticky top-0 z-30" style={{ backgroundColor: 'var(--cream)', borderBottom: '2px solid rgba(30, 42, 74, 0.1)' }}>
+    <div className="min-h-screen" style={{ backgroundColor: 'var(--bg)' }}>
+      <header className="sticky top-0 z-30" style={{ backgroundColor: 'var(--bg)', borderBottom: '2px solid var(--card-border)' }}>
         <div className="max-w-2xl mx-auto px-5 pt-4 pb-2">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
-              <div className="sans text-[10px] uppercase tracking-[0.25em] font-semibold flex items-center gap-2" style={{ color: 'var(--vermillion)' }}>
+              <div className="sans text-[10px] uppercase tracking-[0.25em] font-semibold flex items-center gap-2" style={{ color: 'var(--accent)' }}>
                 {tripEnded ? 'Trip complete' : countdown > 0 ? `${countdown} days to go` : countdown === 0 ? 'Today begins' : 'In progress'}
                 <SyncBadge state={syncState} />
               </div>
-              <h1 className="text-[28px] leading-none font-bold mt-1" style={{ color: 'var(--indigo)' }}>{data.trip.title}</h1>
-              <div className="jp text-xs mt-1" style={{ color: 'var(--sumi-soft)' }}>{data.trip.subtitleJp}</div>
+              <h1 className="text-[28px] leading-none font-bold mt-1" style={{ color: 'var(--primary)' }}>{data.trip.title}</h1>
+              <div className="jp text-xs mt-1" style={{ color: 'var(--text-soft)' }}>{data.trip.subtitleJp}</div>
             </div>
             <div className="flex items-center gap-2">
-              <button onClick={() => setSearchOpen(true)} className="p-2 rounded-full" style={{ color: 'var(--indigo)' }}>
-                <Search size={18} />
-              </button>
+              <button onClick={() => setSearchOpen(true)} className="p-2 rounded-full" style={{ color: 'var(--primary)' }} aria-label="Search"><Search size={18} /></button>
+              <button onClick={() => setSettingsOpen(true)} className="settings-cog" aria-label="Settings"><Settings size={16} /></button>
               {onTrip && (
-                <button onClick={() => setTodayMode(t => !t)} className="sans text-[10px] font-bold px-2 py-1 rounded-full" style={{ background: todayMode ? 'var(--vermillion)' : 'rgba(192, 48, 40, 0.1)', color: todayMode ? 'var(--cream)' : 'var(--vermillion)' }}>
+                <button onClick={() => setTodayMode(t => !t)} className="sans text-[10px] font-bold px-2 py-1 rounded-full" style={{ background: todayMode ? 'var(--accent)' : 'rgba(192, 48, 40, 0.1)', color: todayMode ? 'var(--bg)' : 'var(--accent)' }}>
                   TODAY
                 </button>
               )}
             </div>
           </div>
         </div>
-
         {!todayMode && (
           <nav className="max-w-2xl mx-auto px-2 overflow-x-auto hide-scroll">
             <div className="flex gap-1 pb-2">
               {TABS.map(t => (
                 <button
                   key={t.id}
-                  onClick={() => { setTab(t.id); setActiveDay(null); }}
+                  onClick={() => { setTab(t.id); setActiveDay(null); setActiveItem(null); }}
                   className="sans px-3 py-1.5 text-xs font-semibold rounded-full whitespace-nowrap flex items-center gap-1.5 transition"
                   style={tab === t.id
-                    ? { background: 'var(--indigo)', color: 'var(--cream)' }
-                    : { color: 'var(--sumi-soft)', backgroundColor: 'rgba(30, 42, 74, 0.06)' }}
+                    ? { background: 'var(--primary)', color: 'var(--bg)' }
+                    : { color: 'var(--text-soft)', backgroundColor: 'rgba(30, 42, 74, 0.06)' }}
                 >
                   <t.Icon size={12} /> {t.label}
                 </button>
@@ -269,18 +319,27 @@ export default function App() {
 
       <main className="max-w-2xl mx-auto px-5 py-6 pb-32 paper-tex">
         {!loaded ? (
-          <div className="sans text-sm text-center py-12" style={{ color: 'var(--sumi-soft)' }}>Loading…</div>
+          <div className="sans text-sm text-center py-12" style={{ color: 'var(--text-soft)' }}>Loading…</div>
         ) : todayMode && todayDay ? (
           <TodayMode data={data} day={todayDay} onSave={persist} onExit={() => setTodayMode(false)} />
         ) : tab === 'overview' ? (
-          <OverviewTab data={data} setTab={setTab} setActiveDay={setActiveDay} currentHotel={currentHotel} />
+          <OverviewTab data={data} setTab={setTab} setActiveDay={setActiveDay} currentHotel={currentHotel} onSave={persist} />
         ) : tab === 'days' ? (
-          activeDay ? (
+          activeItem ? (
+            <ItemDetailPage
+              data={data}
+              dayId={activeItem.dayId}
+              itemId={activeItem.itemId}
+              onBack={() => setActiveItem(null)}
+              onSave={persist}
+            />
+          ) : activeDay ? (
             <DayDetailTab
               data={data}
               dayId={activeDay}
               onBack={() => setActiveDay(null)}
               onSave={persist}
+              onOpenItem={(itemId) => setActiveItem({ dayId: activeDay, itemId })}
             />
           ) : (
             <DaysListTab data={data} onSelect={setActiveDay} />
@@ -304,14 +363,12 @@ export default function App() {
         ) : null}
       </main>
 
-      {/* Quick-add FAB (Home tab only when not in today mode) */}
-      {!todayMode && tab === 'overview' && (
+      {!todayMode && tab === 'overview' && !settingsOpen && (
         <button onClick={() => setQuickAddOpen(true)} className="fab" aria-label="Quick add">
           <Plus size={26} />
         </button>
       )}
 
-      {/* Search overlay */}
       {searchOpen && (
         <SearchOverlay
           query={searchQuery}
@@ -321,19 +378,27 @@ export default function App() {
           onPick={(r) => {
             setSearchOpen(false);
             setSearchQuery('');
-            if (r.dayId) { setTab('days'); setActiveDay(r.dayId); }
-            else if (r.tab) { setTab(r.tab); setActiveDay(null); }
+            if (r.itemId && r.dayId) navigateToItem(r.dayId, r.itemId);
+            else if (r.dayId) { setTab('days'); setActiveDay(r.dayId); setActiveItem(null); }
+            else if (r.tab) { setTab(r.tab); setActiveDay(null); setActiveItem(null); }
           }}
         />
       )}
 
-      {/* Quick-add modal */}
       {quickAddOpen && (
         <QuickAddModal
-          data={data}
-          onSave={persist}
           onClose={() => setQuickAddOpen(false)}
           onNavigate={(t) => { setQuickAddOpen(false); setTab(t); }}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsPanel
+          data={data}
+          largeText={largeText}
+          setLargeText={setLargeText}
+          onSave={persist}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
     </div>
@@ -343,12 +408,161 @@ export default function App() {
 function SyncBadge({ state }) {
   if (state === 'saving') return <span className="sans flex items-center gap-1 normal-case tracking-normal font-normal"><Cloud size={10} /> Saving</span>;
   if (state === 'saved') return <span className="sans flex items-center gap-1 normal-case tracking-normal font-normal"><CheckCircle2 size={10} /> Saved</span>;
-  if (state === 'error') return <span className="sans flex items-center gap-1 normal-case tracking-normal font-normal" style={{ color: 'var(--vermillion)' }}><CloudOff size={10} /> Offline</span>;
+  if (state === 'error') return <span className="sans flex items-center gap-1 normal-case tracking-normal font-normal" style={{ color: 'var(--accent)' }}><CloudOff size={10} /> Offline</span>;
   return null;
 }
 
+/* ========================= SETTINGS PANEL ========================= */
+function SettingsPanel({ data, largeText, setLargeText, onSave, onClose }) {
+  const [bagBeingEdited, setBagBeingEdited] = useState(null);
+  const [addingBag, setAddingBag] = useState(false);
+
+  const setTheme = (t) => onSave({ ...data, theme: t });
+  const setNap = (nap) => onSave({ ...data, aidenNap: nap });
+
+  const saveBag = (bag) => {
+    const exists = (data.bags || []).find(b => b.id === bag.id);
+    const newBags = exists ? data.bags.map(b => b.id === bag.id ? bag : b) : [...(data.bags || []), bag];
+    onSave({ ...data, bags: newBags });
+    setBagBeingEdited(null); setAddingBag(false);
+  };
+  const deleteBag = (id) => {
+    if (!confirm('Delete this bag? Items in it will become unassigned.')) return;
+    onSave({ ...data, bags: data.bags.filter(b => b.id !== id) });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ backgroundColor: 'var(--bg)' }}>
+      <div className="max-w-2xl mx-auto px-5 py-6">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold" style={{ color: 'var(--primary)' }}>Settings</h2>
+          <button onClick={onClose} className="p-2 rounded-full" style={{ color: 'var(--text-soft)' }}><X size={20} /></button>
+        </div>
+
+        {/* Theme */}
+        <section className="mb-6">
+          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Theme</h3>
+          <div className="grid grid-cols-2 gap-2">
+            <ThemeBtn current={data.theme} value="auto" label="Auto" Icon={Settings} onClick={() => setTheme('auto')} />
+            <ThemeBtn current={data.theme} value="light" label="Light" Icon={Sun} onClick={() => setTheme('light')} />
+            <ThemeBtn current={data.theme} value="dark" label="Dark" Icon={Moon} onClick={() => setTheme('dark')} />
+            <ThemeBtn current={data.theme} value="neon" label="Neon Tokyo" Icon={Sparkles} onClick={() => setTheme('neon')} />
+          </div>
+          <div className="sans text-[11px] mt-2" style={{ color: 'var(--text-soft)' }}>Auto follows your phone's system setting.</div>
+        </section>
+
+        {/* Large text */}
+        <section className="mb-6">
+          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Text size</h3>
+          <button onClick={() => setLargeText(!largeText)} className="w-full p-3 rounded-xl flex items-center justify-between" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+            <div className="flex items-center gap-3">
+              <Type size={18} style={{ color: 'var(--accent)' }} />
+              <div className="text-left">
+                <div className="sans font-bold text-sm" style={{ color: 'var(--text)' }}>Large text</div>
+                <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>Bigger fonts everywhere</div>
+              </div>
+            </div>
+            <div className={`w-11 h-6 rounded-full transition flex items-center ${largeText ? 'justify-end' : 'justify-start'} px-0.5`} style={{ background: largeText ? 'var(--accent)' : 'rgba(0,0,0,0.15)' }}>
+              <div className="w-5 h-5 rounded-full bg-white" />
+            </div>
+          </button>
+        </section>
+
+        {/* Aiden's nap */}
+        <section className="mb-6">
+          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Aiden's nap</h3>
+          <div className="p-4 rounded-xl space-y-3" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+            <button onClick={() => setNap({ ...data.aidenNap, enabled: !data.aidenNap.enabled })} className="w-full flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Baby size={18} style={{ color: 'var(--accent)' }} />
+                <div className="text-left">
+                  <div className="sans font-bold text-sm" style={{ color: 'var(--text)' }}>Show on every day</div>
+                  <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>{data.aidenNap.enabled ? 'On' : 'Off'}</div>
+                </div>
+              </div>
+              <div className={`w-11 h-6 rounded-full transition flex items-center ${data.aidenNap.enabled ? 'justify-end' : 'justify-start'} px-0.5`} style={{ background: data.aidenNap.enabled ? 'var(--accent)' : 'rgba(0,0,0,0.15)' }}>
+                <div className="w-5 h-5 rounded-full bg-white" />
+              </div>
+            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="sans text-[10px] uppercase tracking-wider font-semibold block mb-1" style={{ color: 'var(--text-soft)' }}>Start</label>
+                <input type="time" value={data.aidenNap.start} onChange={e => setNap({ ...data.aidenNap, start: e.target.value })} className="sans w-full p-2 rounded border" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+              </div>
+              <div>
+                <label className="sans text-[10px] uppercase tracking-wider font-semibold block mb-1" style={{ color: 'var(--text-soft)' }}>End</label>
+                <input type="time" value={data.aidenNap.end} onChange={e => setNap({ ...data.aidenNap, end: e.target.value })} className="sans w-full p-2 rounded border" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Bag manager */}
+        <section className="mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>Bags</h3>
+            <button onClick={() => setAddingBag(true)} className="btn-accent sans px-3 py-1.5 rounded-full text-[11px] font-bold flex items-center gap-1"><Plus size={12} /> Add bag</button>
+          </div>
+          <div className="sans text-[11px] mb-2" style={{ color: 'var(--text-soft)' }}>Bags are used in the Packing tab to organise items.</div>
+          <div className="space-y-2">
+            {(data.bags || []).map(bag => (
+              <div key={bag.id} className="p-3 rounded-xl flex items-center gap-3" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+                <span className="text-2xl">{bag.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="sans font-bold text-sm" style={{ color: 'var(--text)' }}>{bag.name}</div>
+                  <div className="sans text-[10px]" style={{ color: 'var(--text-soft)' }}>{bag.owner === 'TM' ? 'Tim & Michelle' : 'Caroline & David'}</div>
+                </div>
+                <button onClick={() => setBagBeingEdited(bag)} className="sans text-[11px] font-semibold" style={{ color: 'var(--accent)' }}>Edit</button>
+                <button onClick={() => deleteBag(bag.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <button onClick={onClose} className="w-full btn-primary sans py-3 rounded-xl font-bold">Done</button>
+      </div>
+
+      {(bagBeingEdited || addingBag) && (
+        <BagEditor bag={bagBeingEdited || { id: uid(), name: '', owner: 'TM', icon: '🎒' }} onSave={saveBag} onClose={() => { setBagBeingEdited(null); setAddingBag(false); }} />
+      )}
+    </div>
+  );
+}
+
+function ThemeBtn({ current, value, label, Icon, onClick }) {
+  const active = current === value;
+  return (
+    <button onClick={onClick} className="p-3 rounded-xl flex items-center gap-2" style={{
+      background: active ? 'var(--primary)' : 'var(--card)',
+      color: active ? 'var(--bg)' : 'var(--text)',
+      border: '1px solid var(--card-border)',
+    }}>
+      <Icon size={16} />
+      <span className="sans text-sm font-bold">{label}</span>
+    </button>
+  );
+}
+
+function BagEditor({ bag, onSave, onClose }) {
+  const [b, setB] = useState(bag);
+  const set = (k, v) => setB({ ...b, [k]: v });
+  return (
+    <Modal onClose={onClose} title={bag.name ? 'Edit bag' : 'New bag'}>
+      <Field label="Icon (single emoji)"><TextInput value={b.icon} onChange={v => set('icon', v)} placeholder="🎒" /></Field>
+      <Field label="Name"><TextInput value={b.name} onChange={v => set('name', v)} placeholder="e.g. Yellow case" /></Field>
+      <Field label="Owner">
+        <select value={b.owner} onChange={e => set('owner', e.target.value)} className="sans w-full p-2 rounded border" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="TM">Tim & Michelle</option>
+          <option value="CD">Caroline & David</option>
+        </select>
+      </Field>
+      <EditorButtons onSave={() => onSave(b)} onClose={onClose} />
+    </Modal>
+  );
+}
+
 /* ========================= OVERVIEW ========================= */
-function OverviewTab({ data, setTab, setActiveDay, currentHotel }) {
+function OverviewTab({ data, setTab, setActiveDay, currentHotel, onSave }) {
   const today = TODAY();
   const todayDay = data.days.find(d => d.date === today);
   const nextDay = data.days.find(d => d.date >= today) || data.days[0];
@@ -360,37 +574,39 @@ function OverviewTab({ data, setTab, setActiveDay, currentHotel }) {
   return (
     <div className="space-y-5 fade-in">
       <div className="bg-white rounded-2xl p-6 card-shadow-lg relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-32 h-32 -mt-8 -mr-8 opacity-10" style={{ background: 'var(--vermillion)', borderRadius: '50%' }} />
+        <div className="absolute top-0 right-0 w-32 h-32 -mt-8 -mr-8 opacity-10" style={{ background: 'var(--accent)', borderRadius: '50%' }} />
         <div className="relative">
-          <div className="sans text-[10px] uppercase tracking-[0.25em] font-semibold mb-2" style={{ color: 'var(--vermillion)' }}>{data.trip.subtitle}</div>
-          <h2 className="text-4xl font-bold leading-none" style={{ color: 'var(--indigo)' }}>{data.trip.title}</h2>
-          <div className="jp text-lg mt-2" style={{ color: 'var(--sumi-soft)' }}>{data.trip.subtitleJp}</div>
+          <div className="sans text-[10px] uppercase tracking-[0.25em] font-semibold mb-2" style={{ color: 'var(--accent)' }}>{data.trip.subtitle}</div>
+          <h2 className="text-4xl font-bold leading-none" style={{ color: 'var(--primary)' }}>{data.trip.title}</h2>
+          <div className="jp text-lg mt-2" style={{ color: 'var(--text-soft)' }}>{data.trip.subtitleJp}</div>
           <div className="divider-bold my-4" />
-          <div className="sans text-sm space-y-1" style={{ color: 'var(--sumi)' }}>
+          <div className="sans text-sm space-y-1" style={{ color: 'var(--text)' }}>
             <div>{fmtDateLong(data.trip.startDate)}</div>
             <div>→ {fmtDateLong(data.trip.endDate)}</div>
-            <div className="pt-2 text-xs" style={{ color: 'var(--sumi-soft)' }}>{data.trip.travellers}</div>
+            <div className="pt-2 text-xs" style={{ color: 'var(--text-soft)' }}>{data.trip.travellers}</div>
           </div>
         </div>
       </div>
 
       {currentHotel && (
         <div className="bg-white rounded-xl p-4 card-shadow accent-line pl-4">
-          <div className="sans text-[10px] uppercase tracking-widest font-semibold" style={{ color: 'var(--vermillion)' }}>Current hotel</div>
-          <div className="font-bold text-lg" style={{ color: 'var(--indigo)' }}>{currentHotel.name}</div>
-          {currentHotel.nameJp && <div className="jp text-xs" style={{ color: 'var(--sumi-soft)' }}>{currentHotel.nameJp}</div>}
+          <div className="sans text-[10px] uppercase tracking-widest font-semibold" style={{ color: 'var(--accent)' }}>Current hotel</div>
+          <div className="font-bold text-lg" style={{ color: 'var(--primary)' }}>{currentHotel.name}</div>
+          {currentHotel.nameJp && <div className="jp text-xs" style={{ color: 'var(--text-soft)' }}>{currentHotel.nameJp}</div>}
         </div>
       )}
 
-      <CurrencyReference data={data} />
+      <PreDepartureSection data={data} onSave={onSave} />
+
+      <CurrencyReference data={data} onSave={onSave} />
 
       {(todayDay || nextDay) && (
         <div>
-          <h3 className="sans text-[10px] uppercase tracking-[0.2em] font-semibold mb-2" style={{ color: 'var(--vermillion)' }}>{todayDay ? 'Today' : 'Next'}</h3>
+          <h3 className="sans text-[10px] uppercase tracking-[0.2em] font-semibold mb-2" style={{ color: 'var(--accent)' }}>{todayDay ? 'Today' : 'Next'}</h3>
           <button onClick={() => { setTab('days'); setActiveDay((todayDay || nextDay).id); }} className="w-full bg-white rounded-2xl p-5 card-shadow text-left active:scale-[0.99] transition">
-            <div className="sans text-[10px] uppercase tracking-widest" style={{ color: 'var(--sumi-soft)' }}>{fmtDate((todayDay || nextDay).date)}</div>
-            <div className="text-xl font-bold mt-1" style={{ color: 'var(--indigo)' }}>{(todayDay || nextDay).title}</div>
-            <div className="sans text-xs mt-2" style={{ color: 'var(--sumi-soft)' }}>{(todayDay || nextDay).summary}</div>
+            <div className="sans text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-soft)' }}>{fmtDate((todayDay || nextDay).date)}</div>
+            <div className="text-xl font-bold mt-1" style={{ color: 'var(--primary)' }}>{(todayDay || nextDay).title}</div>
+            <div className="sans text-xs mt-2" style={{ color: 'var(--text-soft)' }}>{(todayDay || nextDay).summary}</div>
             <AidenBadge status={data.aidenStatus[(todayDay || nextDay).date]} />
           </button>
         </div>
@@ -404,24 +620,24 @@ function OverviewTab({ data, setTab, setActiveDay, currentHotel }) {
           { id: 'packing', label: 'Packing', Icon: Luggage },
         ].map(({ id, label, Icon }) => (
           <button key={id} onClick={() => setTab(id)} className="bg-white rounded-xl p-3 card-shadow flex flex-col items-center gap-1 active:scale-95 transition">
-            <Icon size={18} style={{ color: 'var(--vermillion)' }} />
-            <span className="sans text-[10px] font-semibold" style={{ color: 'var(--sumi)' }}>{label}</span>
+            <Icon size={18} style={{ color: 'var(--accent)' }} />
+            <span className="sans text-[10px] font-semibold" style={{ color: 'var(--text)' }}>{label}</span>
           </button>
         ))}
       </div>
 
       {upcomingBookings.length > 0 && (
         <div>
-          <h3 className="sans text-[10px] uppercase tracking-[0.2em] font-semibold mb-2" style={{ color: 'var(--vermillion)' }}>Next to book</h3>
+          <h3 className="sans text-[10px] uppercase tracking-[0.2em] font-semibold mb-2" style={{ color: 'var(--accent)' }}>Next to book</h3>
           <div className="space-y-2">
             {upcomingBookings.map(b => {
               const days = daysUntil(b.deadline);
               return (
                 <button key={b.id} onClick={() => setTab('bookings')} className="w-full bg-white rounded-xl p-3 card-shadow text-left flex items-center gap-3 active:scale-[0.99] transition">
-                  <AlertCircle size={16} style={{ color: b.status === 'urgent' ? 'var(--vermillion)' : 'var(--gold)' }} />
+                  <AlertCircle size={16} style={{ color: b.status === 'urgent' ? 'var(--accent)' : 'var(--gold)' }} />
                   <div className="flex-1 min-w-0">
-                    <div className="sans text-sm font-semibold" style={{ color: 'var(--indigo)' }}>{b.title}</div>
-                    <div className="sans text-[10px]" style={{ color: 'var(--sumi-soft)' }}>by {fmtDate(b.deadline)} · {days}d</div>
+                    <div className="sans text-sm font-semibold" style={{ color: 'var(--primary)' }}>{b.title}</div>
+                    <div className="sans text-[10px]" style={{ color: 'var(--text-soft)' }}>by {fmtDate(b.deadline)} · {days}d</div>
                   </div>
                 </button>
               );
@@ -436,34 +652,101 @@ function OverviewTab({ data, setTab, setActiveDay, currentHotel }) {
 function AidenBadge({ status }) {
   if (!status) return null;
   return (
-    <div className="sans text-[10px] font-semibold mt-3 inline-flex items-center gap-1 px-2 py-1 rounded-full" style={{ background: 'rgba(192, 48, 40, 0.1)', color: 'var(--vermillion)' }}>
+    <div className="sans text-[10px] font-semibold mt-3 inline-flex items-center gap-1 px-2 py-1 rounded-full" style={{ background: 'rgba(192, 48, 40, 0.1)', color: 'var(--accent)' }}>
       <Baby size={11} /> Aiden: {status}
     </div>
   );
 }
 
-function CurrencyReference({ data }) {
+function CurrencyReference({ data, onSave }) {
   const [rates, setRates] = useState(data.fxRates);
   useEffect(() => {
     if (!rates || (Date.now() - new Date(rates.fetchedAt).getTime() > 24 * 60 * 60 * 1000)) {
-      getRates().then(setRates);
+      getRates().then(r => { setRates(r); if (onSave) onSave({ ...data, fxRates: r }); });
     }
   }, []);
   if (!rates) return null;
   return (
     <div className="bg-white rounded-xl p-3 card-shadow flex items-center justify-around text-center sans">
       <div>
-        <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--sumi-soft)' }}>¥1,000</div>
-        <div className="text-sm font-bold" style={{ color: 'var(--indigo)' }}>≈ {formatGBP(toGBP(1000, 'JPY', rates))}</div>
+        <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--text-soft)' }}>¥1,000</div>
+        <div className="text-sm font-bold" style={{ color: 'var(--primary)' }}>≈ {formatGBP(toGBP(1000, 'JPY', rates))}</div>
       </div>
       <div>
-        <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--sumi-soft)' }}>₩10,000</div>
-        <div className="text-sm font-bold" style={{ color: 'var(--indigo)' }}>≈ {formatGBP(toGBP(10000, 'KRW', rates))}</div>
+        <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--text-soft)' }}>₩10,000</div>
+        <div className="text-sm font-bold" style={{ color: 'var(--primary)' }}>≈ {formatGBP(toGBP(10000, 'KRW', rates))}</div>
       </div>
       <div>
-        <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--sumi-soft)' }}>£1</div>
-        <div className="text-sm font-bold" style={{ color: 'var(--indigo)' }}>≈ ¥{Math.round(1 / rates.GBP_per_JPY)}</div>
+        <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--text-soft)' }}>£1</div>
+        <div className="text-sm font-bold" style={{ color: 'var(--primary)' }}>≈ ¥{Math.round(1 / rates.GBP_per_JPY)}</div>
       </div>
+    </div>
+  );
+}
+
+/* ========================= PRE-DEPARTURE ========================= */
+function PreDepartureSection({ data, onSave }) {
+  const [open, setOpen] = useState(true);
+  const [active, setActive] = useState('tim'); // tim | michelle
+  const [newTask, setNewTask] = useState('');
+
+  const tasks = data.predepTasks || { tim: [], michelle: [] };
+  const list = tasks[active] || [];
+
+  const totalRemaining = (tasks.tim || []).filter(t => !t.done).length + (tasks.michelle || []).filter(t => !t.done).length;
+
+  // Auto-hide when trip starts (allow manual reopen)
+  const tripStarted = daysUntil(data.trip.startDate) <= 0;
+
+  const updateTasks = (newList) => {
+    onSave({ ...data, predepTasks: { ...tasks, [active]: newList } });
+  };
+
+  const toggle = (id) => updateTasks(list.map(t => t.id === id ? { ...t, done: !t.done } : t));
+  const add = () => {
+    if (!newTask.trim()) return;
+    updateTasks([...list, { id: uid(), text: newTask.trim(), done: false }]);
+    setNewTask('');
+  };
+  const remove = (id) => updateTasks(list.filter(t => t.id !== id));
+
+  if (tripStarted && totalRemaining === 0) return null;
+
+  return (
+    <div className="predep-card">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between">
+        <div className="text-left">
+          <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>Before we go</div>
+          <div className="font-bold mt-0.5" style={{ color: 'var(--primary)' }}>Pre-departure tasks</div>
+          <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{totalRemaining} task{totalRemaining === 1 ? '' : 's'} remaining</div>
+        </div>
+        {open ? <ChevronUp size={18} style={{ color: 'var(--text-soft)' }} /> : <ChevronDown size={18} style={{ color: 'var(--text-soft)' }} />}
+      </button>
+
+      {open && (
+        <div className="mt-3">
+          <div className="flex gap-2 mb-3">
+            <button onClick={() => setActive('tim')} className={`couple-tab ${active === 'tim' ? 'active' : ''}`}>Tim's tasks</button>
+            <button onClick={() => setActive('michelle')} className={`couple-tab ${active === 'michelle' ? 'active' : ''}`}>Michelle's tasks</button>
+          </div>
+          <div className="space-y-1">
+            {list.length === 0 && <div className="sans text-xs italic text-center py-3" style={{ color: 'var(--text-soft)' }}>No tasks yet — add one below.</div>}
+            {list.map(t => (
+              <div key={t.id} className="flex items-center gap-3 py-1.5">
+                <button onClick={() => toggle(t.id)} className={`tickbox ${t.done ? 'on' : ''}`}>
+                  {t.done && <CheckCircle2 size={13} />}
+                </button>
+                <span className="flex-1 sans text-sm" style={{ color: 'var(--text)', opacity: t.done ? 0.5 : 1 }}>{t.text}</span>
+                <button onClick={() => remove(t.id)} style={{ color: 'var(--text-soft)' }}><X size={14} /></button>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2 mt-3">
+            <input value={newTask} onChange={e => setNewTask(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} placeholder={`Add task for ${active === 'tim' ? 'Tim' : 'Michelle'}…`} className="sans flex-1 p-2 rounded-lg border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+            <button onClick={add} className="btn-primary sans px-3 rounded-lg font-bold"><Plus size={14} /></button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -471,7 +754,7 @@ function CurrencyReference({ data }) {
 /* ========================= DAYS LIST ========================= */
 function DaysListTab({ data, onSelect }) {
   const today = TODAY();
-  const [filter, setFilter] = useState('all'); // all | upcoming | past
+  const [filter, setFilter] = useState('all');
 
   const filtered = useMemo(() => {
     if (filter === 'upcoming') return data.days.filter(d => d.date >= today);
@@ -487,9 +770,7 @@ function DaysListTab({ data, onSelect }) {
           { id: 'upcoming', label: 'Upcoming' },
           { id: 'past', label: 'Past' },
         ].map(f => (
-          <button key={f.id} onClick={() => setFilter(f.id)} className={`filter-pill sans ${filter === f.id ? 'active' : ''}`}>
-            {f.label}
-          </button>
+          <button key={f.id} onClick={() => setFilter(f.id)} className={`filter-pill sans ${filter === f.id ? 'active' : ''}`}>{f.label}</button>
         ))}
       </div>
       <div className="space-y-3">
@@ -501,16 +782,16 @@ function DaysListTab({ data, onSelect }) {
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <div className="sans text-[10px] uppercase tracking-[0.2em] font-semibold" style={{ color: 'var(--vermillion)' }}>
+                    <div className="sans text-[10px] uppercase tracking-[0.2em] font-semibold" style={{ color: 'var(--accent)' }}>
                       Day {dayIndex + 1} · {fmtDate(day.date)}
                     </div>
                     {isToday && <span className="today-badge sans">Today</span>}
                   </div>
-                  <h3 className="text-lg font-bold mt-1 leading-tight" style={{ color: 'var(--indigo)' }}>{day.title}</h3>
-                  {day.titleJp && <div className="jp text-[11px] mt-0.5" style={{ color: 'var(--sumi-soft)' }}>{day.titleJp}</div>}
-                  <div className="sans text-xs mt-2 leading-snug" style={{ color: 'var(--sumi)' }}>{day.summary}</div>
+                  <h3 className="text-lg font-bold mt-1 leading-tight" style={{ color: 'var(--primary)' }}>{day.title}</h3>
+                  {day.titleJp && <div className="jp text-[11px] mt-0.5" style={{ color: 'var(--text-soft)' }}>{day.titleJp}</div>}
+                  <div className="sans text-xs mt-2 leading-snug" style={{ color: 'var(--text)' }}>{day.summary}</div>
                   <div className="flex items-center gap-2 mt-3 flex-wrap">
-                    <span className="sans text-[10px]" style={{ color: 'var(--sumi-soft)' }}>{day.items.length} items</span>
+                    <span className="sans text-[10px]" style={{ color: 'var(--text-soft)' }}>{day.items.length} items</span>
                     <AidenBadge status={data.aidenStatus[day.date]} />
                   </div>
                 </div>
@@ -522,7 +803,7 @@ function DaysListTab({ data, onSelect }) {
           );
         })}
         {filtered.length === 0 && (
-          <div className="sans text-sm text-center py-8" style={{ color: 'var(--sumi-soft)' }}>No days in this filter.</div>
+          <div className="sans text-sm text-center py-8" style={{ color: 'var(--text-soft)' }}>No days in this filter.</div>
         )}
       </div>
     </div>
@@ -530,10 +811,10 @@ function DaysListTab({ data, onSelect }) {
 }
 
 /* ========================= DAY DETAIL ========================= */
-function DayDetailTab({ data, dayId, onBack, onSave }) {
+function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem }) {
   const day = data.days.find(d => d.id === dayId);
-  const [editingItem, setEditingItem] = useState(null);
-  const [adding, setAdding] = useState(false);
+  const [groupFilter, setGroupFilter] = useState({ tm: false, cd: false }); // both unselected = show all
+  const [expandedTime, setExpandedTime] = useState(null); // item id of the expanded times-bar pill
   if (!day) return null;
 
   const aidenStatus = data.aidenStatus[day.date];
@@ -546,53 +827,51 @@ function DayDetailTab({ data, dayId, onBack, onSave }) {
     onSave({ ...data, days: data.days.map(d => d.id === dayId ? updated : d) });
   };
 
-  const saveItem = (item) => {
-    const exists = day.items.find(i => i.id === item.id);
-    const newItems = exists
-      ? day.items.map(i => i.id === item.id ? item : i)
-      : [...day.items, item].sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ'));
-    updateDay({ ...day, items: newItems });
-    setEditingItem(null);
-    setAdding(false);
-  };
-
-  const deleteItem = (id) => {
-    if (confirm('Delete this item?')) {
-      updateDay({ ...day, items: day.items.filter(i => i.id !== id), pinned: (day.pinned || []).filter(p => p !== id) });
-    }
-  };
-
   const togglePin = (id) => {
     const pinned = day.pinned || [];
     updateDay({ ...day, pinned: pinned.includes(id) ? pinned.filter(p => p !== id) : [...pinned, id] });
   };
 
-  // Build sorted items: pinned first (in pin order), then by time
-  const pinnedSet = new Set(day.pinned || []);
-  const pinnedItems = (day.pinned || []).map(id => day.items.find(i => i.id === id)).filter(Boolean);
-  const unpinnedItems = day.items.filter(i => !pinnedSet.has(i.id)).sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ'));
+  // Apply group filter
+  const filterItems = (items) => {
+    const showTM = groupFilter.tm;
+    const showCD = groupFilter.cd;
+    if (!showTM && !showCD) return items; // both off = show all
+    if (showTM && showCD) return items;
+    return items.filter(i => {
+      if (i.owner === 'EVERYONE') return true;
+      if (showTM && i.owner === 'TM') return true;
+      if (showCD && i.owner === 'CD') return true;
+      return false;
+    });
+  };
 
-  // Important times: items with HH:MM format and a status of confirmed/booked
+  const pinnedSet = new Set(day.pinned || []);
+  const allFiltered = filterItems(day.items);
+  const pinnedItems = (day.pinned || []).map(id => day.items.find(i => i.id === id)).filter(Boolean).filter(i => allFiltered.includes(i));
+  const unpinnedItems = allFiltered.filter(i => !pinnedSet.has(i.id)).sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ'));
+
   const importantTimes = day.items
     .filter(i => i.time && /^\d{2}:\d{2}/.test(i.time) && (i.status === 'confirmed' || i.status === 'booked'))
+    .filter(i => allFiltered.includes(i))
     .sort((a, b) => a.time.localeCompare(b.time));
 
   return (
     <div className="fade-in">
-      <button onClick={onBack} className="sans flex items-center gap-1 text-xs mb-4 font-semibold" style={{ color: 'var(--vermillion)' }}>
+      <button onClick={onBack} className="sans flex items-center gap-1 text-xs mb-4 font-semibold" style={{ color: 'var(--accent)' }}>
         <ChevronLeft size={14} /> All days
       </button>
-      <div className="sans text-[10px] uppercase tracking-[0.2em] font-semibold flex items-center gap-2" style={{ color: 'var(--vermillion)' }}>
+      <div className="sans text-[10px] uppercase tracking-[0.2em] font-semibold flex items-center gap-2" style={{ color: 'var(--accent)' }}>
         Day {dayIndex + 1} · {fmtDateLong(day.date)}
         {isToday && <span className="today-badge sans">Today</span>}
       </div>
-      <h2 className="text-3xl font-bold leading-tight mt-1" style={{ color: 'var(--indigo)' }}>{day.title}</h2>
-      {day.titleJp && <div className="jp text-sm mt-1" style={{ color: 'var(--sumi-soft)' }}>{day.titleJp}</div>}
+      <h2 className="text-3xl font-bold leading-tight mt-1" style={{ color: 'var(--primary)' }}>{day.title}</h2>
+      {day.titleJp && <div className="jp text-sm mt-1" style={{ color: 'var(--text-soft)' }}>{day.titleJp}</div>}
 
       <div className="flex flex-wrap gap-2 mt-2">
         <AidenBadge status={aidenStatus} />
         {currentHotel && (
-          <div className="sans text-[10px] font-semibold inline-flex items-center gap-1 px-2 py-1 rounded-full" style={{ background: 'rgba(30, 42, 74, 0.08)', color: 'var(--indigo)' }}>
+          <div className="sans text-[10px] font-semibold inline-flex items-center gap-1 px-2 py-1 rounded-full" style={{ background: 'rgba(30, 42, 74, 0.08)', color: 'var(--primary)' }}>
             <Hotel size={11} /> {currentHotel.name}
           </div>
         )}
@@ -602,33 +881,64 @@ function DayDetailTab({ data, dayId, onBack, onSave }) {
         value={day.summary}
         onSave={v => updateDay({ ...day, summary: v })}
         className="sans text-sm mt-4 leading-relaxed"
-        style={{ color: 'var(--sumi)' }}
+        style={{ color: 'var(--text)' }}
         placeholder="Day summary…"
         multiline
       />
+
+      {/* Group filter */}
+      <div className="flex gap-2 mt-4 mb-3">
+        <span className="sans text-[10px] uppercase tracking-widest font-bold self-center" style={{ color: 'var(--text-soft)' }}>Show:</span>
+        <button onClick={() => setGroupFilter({ ...groupFilter, tm: !groupFilter.tm })} className={`filter-pill sans ${groupFilter.tm ? 'active' : ''}`}>T&M</button>
+        <button onClick={() => setGroupFilter({ ...groupFilter, cd: !groupFilter.cd })} className={`filter-pill sans ${groupFilter.cd ? 'active' : ''}`}>C&D</button>
+        <span className="sans text-[10px] self-center italic" style={{ color: 'var(--text-soft)' }}>{!groupFilter.tm && !groupFilter.cd ? 'All shown' : ''}</span>
+      </div>
 
       {/* Important times bar */}
       {importantTimes.length > 0 && (
         <div className="times-bar">
           {importantTimes.map(it => (
-            <div key={it.id} className="time-pill">
+            <button key={it.id} className="time-pill" onClick={() => setExpandedTime(it.id === expandedTime ? null : it.id)}>
               <div className="t sans">{it.time}</div>
               <div className="l sans">{it.title.length > 18 ? it.title.slice(0, 16) + '…' : it.title}</div>
-            </div>
+            </button>
           ))}
         </div>
       )}
+      {/* Expanded time card */}
+      {expandedTime && (() => {
+        const it = day.items.find(x => x.id === expandedTime);
+        if (!it) return null;
+        const Icon = ICONS[it.type] || MapPin;
+        return (
+          <div className="bg-white rounded-xl p-4 card-shadow mb-4 fade-in">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(192, 48, 40, 0.1)' }}><Icon size={16} style={{ color: 'var(--accent)' }} /></div>
+                  <div className="sans text-base font-bold" style={{ color: 'var(--accent)' }}>{it.time}</div>
+                  <StatusChip status={it.status} />
+                </div>
+                <div className="font-bold text-lg mt-2" style={{ color: 'var(--primary)' }}>{it.title}</div>
+                {it.note && <div className="sans text-sm mt-2 leading-relaxed" style={{ color: 'var(--text)' }}>{it.note}</div>}
+                {it.mapUrl && <a href={it.mapUrl} target="_blank" rel="noreferrer" className="sans text-sm font-semibold mt-3 inline-flex items-center gap-1" style={{ color: 'var(--accent)' }}><MapPin size={13} /> Open map</a>}
+                {it.files?.length > 0 && <FileList files={it.files} />}
+                <button onClick={() => { setExpandedTime(null); onOpenItem(it.id); }} className="sans text-sm font-semibold mt-3" style={{ color: 'var(--accent)' }}>Open full detail →</button>
+              </div>
+              <button onClick={() => setExpandedTime(null)} style={{ color: 'var(--text-soft)' }}><X size={18} /></button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Booked for today */}
       {linkedBookings.length > 0 && (
         <div className="booked-section">
-          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2 flex items-center gap-1" style={{ color: 'var(--vermillion)' }}>
+          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2 flex items-center gap-1" style={{ color: 'var(--accent)' }}>
             <Ticket size={12} /> Booked for today
           </div>
           <div className="space-y-2">
-            {linkedBookings.map(b => (
-              <BookingMiniCard key={b.id} booking={b} />
-            ))}
+            {linkedBookings.map(b => <BookingMiniCard key={b.id} booking={b} />)}
           </div>
         </div>
       )}
@@ -636,56 +946,41 @@ function DayDetailTab({ data, dayId, onBack, onSave }) {
       <div className="divider my-5" />
 
       <div className="space-y-3">
-        {/* Pinned items first */}
         {pinnedItems.map(item => (
-          <DayItem
-            key={item.id}
-            item={item}
-            isPinned
-            onTogglePin={() => togglePin(item.id)}
-            onEdit={() => setEditingItem(item)}
-            onDelete={() => deleteItem(item.id)}
-            onUpdatePlaces={(places) => saveItem({ ...item, places })}
-          />
+          <DayItemCard key={item.id} item={item} isPinned onClick={() => onOpenItem(item.id)} onTogglePin={() => togglePin(item.id)} />
         ))}
-        {/* Aiden's nap (synthetic) */}
         {data.aidenNap?.enabled && (
-          <div className="bg-white rounded-xl p-4 card-shadow" style={{ borderLeft: '3px solid var(--vermillion)' }}>
+          <div className="bg-white rounded-xl p-4 card-shadow" style={{ borderLeft: '3px solid var(--accent)' }}>
             <div className="flex items-start gap-3">
               <div className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(192, 48, 40, 0.1)' }}>
-                <Baby size={16} style={{ color: 'var(--vermillion)' }} />
+                <Baby size={16} style={{ color: 'var(--accent)' }} />
               </div>
               <div className="flex-1">
-                <div className="sans text-xs font-bold" style={{ color: 'var(--vermillion)' }}>{data.aidenNap.start} – {data.aidenNap.end}</div>
-                <div className="font-bold" style={{ color: 'var(--indigo)' }}>🐰 {data.aidenNap.label}</div>
-                <div className="sans text-[10px] italic mt-1" style={{ color: 'var(--sumi-soft)' }}>Auto-shown on every day. Edit in Settings.</div>
+                <div className="sans text-xs font-bold" style={{ color: 'var(--accent)' }}>{data.aidenNap.start} – {data.aidenNap.end}</div>
+                <div className="font-bold" style={{ color: 'var(--primary)' }}>🐰 {data.aidenNap.label}</div>
+                <div className="sans text-[10px] italic mt-1" style={{ color: 'var(--text-soft)' }}>Edit in Settings (cog icon, top of Home tab).</div>
               </div>
             </div>
           </div>
         )}
-        {/* Other items by time */}
         {unpinnedItems.map(item => (
-          <DayItem
-            key={item.id}
-            item={item}
-            isPinned={false}
-            onTogglePin={() => togglePin(item.id)}
-            onEdit={() => setEditingItem(item)}
-            onDelete={() => deleteItem(item.id)}
-            onUpdatePlaces={(places) => saveItem({ ...item, places })}
-          />
+          <DayItemCard key={item.id} item={item} isPinned={false} onClick={() => onOpenItem(item.id)} onTogglePin={() => togglePin(item.id)} />
         ))}
       </div>
 
-      <button onClick={() => setAdding(true)} className="w-full mt-4 btn-primary sans rounded-xl py-3 text-sm font-bold flex items-center justify-center gap-2">
+      <button onClick={() => {
+        // Add new item — go to detail page in edit mode by creating placeholder
+        const newItem = { id: uid(), type: 'activity', time: '', title: 'New item', note: '', mapUrl: '', status: '', owner: 'EVERYONE', places: [], files: [] };
+        updateDay({ ...day, items: [...day.items, newItem] });
+        onOpenItem(newItem.id);
+      }} className="w-full mt-4 btn-primary sans rounded-xl py-3 text-sm font-bold flex items-center justify-center gap-2">
         <Plus size={16} /> Add item
       </button>
 
       <DayBagSection day={day} template={data.dayBagTemplate} onUpdateDay={updateDay} />
       <WishesSection day={day} onUpdateDay={updateDay} />
       <IdeasSection day={day} onUpdateDay={updateDay} onPromote={(idea) => {
-        // promote idea to a real item
-        const newItem = { id: uid(), type: 'activity', time: '', title: idea.text, note: idea.by ? `Idea from ${idea.by}` : '', mapUrl: '', status: 'tbd', places: [], files: [] };
+        const newItem = { id: uid(), type: 'activity', time: '', title: idea.text, note: idea.by ? `Idea from ${idea.by}` : '', mapUrl: '', status: 'tbd', owner: 'EVERYONE', places: [], files: [] };
         const updated = {
           ...day,
           items: [...day.items, newItem].sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ')),
@@ -694,98 +989,321 @@ function DayDetailTab({ data, dayId, onBack, onSave }) {
         updateDay(updated);
       }} />
       <DayRatingDiary day={day} onUpdateDay={updateDay} />
-
-      {(editingItem || adding) && (
-        <ItemEditor
-          item={editingItem || { id: uid(), type: 'activity', time: '', title: '', note: '', mapUrl: '', status: '', files: [], places: [] }}
-          dayDate={day.date}
-          onSave={saveItem}
-          onClose={() => { setEditingItem(null); setAdding(false); }}
-        />
-      )}
     </div>
   );
 }
 
-function DayItem({ item, isPinned, onTogglePin, onEdit, onDelete, onUpdatePlaces }) {
+// Lightweight day item card (clickable, opens detail page)
+function DayItemCard({ item, isPinned, onClick, onTogglePin }) {
   const Icon = ICONS[item.type] || MapPin;
-  const [expanded, setExpanded] = useState(false);
-  const [addingPlace, setAddingPlace] = useState(false);
-  const [editingPlace, setEditingPlace] = useState(null);
-
-  const placesCount = (item.places || []).length;
-
-  const savePlace = (place) => {
-    const exists = (item.places || []).find(p => p.id === place.id);
-    const newPlaces = exists
-      ? item.places.map(p => p.id === place.id ? place : p)
-      : [...(item.places || []), place];
-    onUpdatePlaces(newPlaces);
-    setAddingPlace(false);
-    setEditingPlace(null);
-  };
-
-  const togglePlaceVisited = (placeId) => {
-    onUpdatePlaces((item.places || []).map(p => p.id === placeId ? { ...p, visited: !p.visited } : p));
-  };
-
-  const deletePlace = (placeId) => {
-    onUpdatePlaces((item.places || []).filter(p => p.id !== placeId));
-  };
-
+  const ownerLabel = item.owner === 'TM' ? 'T&M' : item.owner === 'CD' ? 'C&D' : null;
   return (
-    <div className={`bg-white rounded-xl p-4 card-shadow ${isPinned ? 'pinned-item' : ''}`}>
+    <button onClick={onClick} className={`w-full text-left bg-white rounded-xl p-4 card-shadow active:scale-[0.99] transition ${isPinned ? 'pinned-item' : ''}`}>
       <div className="flex items-start gap-3">
         <div className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(192, 48, 40, 0.1)' }}>
-          <Icon size={16} style={{ color: 'var(--vermillion)' }} />
+          <Icon size={16} style={{ color: 'var(--accent)' }} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            {item.time && <div className="sans text-xs font-bold" style={{ color: 'var(--vermillion)' }}>{item.time}</div>}
+            {item.time && <div className="sans text-xs font-bold" style={{ color: 'var(--accent)' }}>{item.time}</div>}
             <StatusChip status={item.status} />
-            {isPinned && <span className="chip" style={{ background: 'rgba(184, 146, 61, 0.15)', color: '#8a6b26' }}><Pin size={10} /> Pinned</span>}
+            {ownerLabel && <span className="chip" style={{ background: 'rgba(30, 42, 74, 0.08)', color: 'var(--primary)' }}>{ownerLabel}</span>}
+            {isPinned && <span className="chip" style={{ background: 'rgba(184, 146, 61, 0.15)', color: 'var(--gold)' }}><Pin size={10} /> Pinned</span>}
           </div>
-          <div className="font-bold mt-0.5" style={{ color: 'var(--indigo)' }}>{item.title}</div>
-          {item.note && <div className="sans text-xs mt-1.5 leading-relaxed" style={{ color: 'var(--sumi-soft)' }}>{item.note}</div>}
-          {item.files && item.files.length > 0 && <FileList files={item.files} />}
-
-          {/* Places sub-list */}
-          {placesCount > 0 && (
-            <button onClick={() => setExpanded(e => !e)} className="sans text-[11px] font-semibold mt-2 flex items-center gap-1" style={{ color: 'var(--indigo)' }}>
-              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              {placesCount} place{placesCount === 1 ? '' : 's'}
-            </button>
+          <div className="font-bold mt-0.5" style={{ color: 'var(--primary)' }}>{item.title}</div>
+          {item.note && <div className="sans text-xs mt-1.5 leading-snug" style={{ color: 'var(--text-soft)' }}>{item.note.length > 90 ? item.note.slice(0, 88) + '…' : item.note}</div>}
+          {(item.places?.length > 0 || item.files?.length > 0) && (
+            <div className="flex items-center gap-3 mt-2 sans text-[10px]" style={{ color: 'var(--text-soft)' }}>
+              {item.places?.length > 0 && <span className="flex items-center gap-1"><MapPin size={10} /> {item.places.length} places</span>}
+              {item.files?.length > 0 && <span className="flex items-center gap-1"><Paperclip size={10} /> {item.files.length} files</span>}
+            </div>
           )}
-          {expanded && placesCount > 0 && (
-            <div className="subitem-list space-y-1.5 mt-2">
+        </div>
+        <ChevronRight size={16} style={{ color: 'var(--text-soft)' }} />
+      </div>
+    </button>
+  );
+}
+
+function StatusChip({ status }) {
+  if (!status) return null;
+  if (status === 'confirmed' || status === 'booked') return <span className="chip chip-confirmed"><CheckCircle2 size={10} /> {status}</span>;
+  if (status === 'tbd') return <span className="chip chip-tbd"><Clock size={10} /> TBD</span>;
+  if (status === 'urgent') return <span className="chip chip-urgent"><AlertCircle size={10} /> Urgent</span>;
+  if (status === 'done') return <span className="chip chip-done"><CheckCircle2 size={10} /> Done</span>;
+  return null;
+}
+
+function BookingMiniCard({ booking }) {
+  return (
+    <div className="bg-white rounded-lg p-3 card-shadow">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="sans text-sm font-bold flex-1" style={{ color: 'var(--primary)' }}>{booking.title}</div>
+        <StatusChip status={booking.status} />
+      </div>
+      {booking.detail && <div className="sans text-xs mt-1" style={{ color: 'var(--text-soft)' }}>{booking.detail}</div>}
+      {booking.notes && <div className="sans text-xs mt-1" style={{ color: 'var(--text)' }}>{booking.notes}</div>}
+      {booking.files?.length > 0 && <FileList files={booking.files} />}
+    </div>
+  );
+}
+
+/* ========================= ITEM DETAIL PAGE ========================= */
+function ItemDetailPage({ data, dayId, itemId, onBack, onSave }) {
+  const day = data.days.find(d => d.id === dayId);
+  const item = day?.items.find(i => i.id === itemId);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState(item || {});
+  const [uploading, setUploading] = useState(false);
+
+  useEffect(() => { if (item) setForm(item); }, [itemId, item]);
+
+  if (!day || !item) {
+    return (
+      <div className="fade-in">
+        <button onClick={onBack} className="sans flex items-center gap-1 text-sm mb-4 font-semibold" style={{ color: 'var(--accent)' }}><ChevronLeft size={16} /> Back</button>
+        <div className="sans text-sm" style={{ color: 'var(--text-soft)' }}>Item not found.</div>
+      </div>
+    );
+  }
+
+  const Icon = ICONS[item.type] || MapPin;
+
+  const saveItem = (updated) => {
+    const newItems = day.items.map(i => i.id === itemId ? updated : i)
+      .sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ'));
+    onSave({ ...data, days: data.days.map(d => d.id === dayId ? { ...day, items: newItems } : d) });
+  };
+
+  const deleteItem = () => {
+    if (!confirm('Delete this item?')) return;
+    onSave({
+      ...data,
+      days: data.days.map(d => d.id === dayId ? {
+        ...day,
+        items: day.items.filter(i => i.id !== itemId),
+        pinned: (day.pinned || []).filter(p => p !== itemId),
+      } : d),
+    });
+    onBack();
+  };
+
+  const onSaveEdit = () => {
+    saveItem(form);
+    setEditing(false);
+  };
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const u = await uploadFile(file, `day-${day.date}`);
+      const newForm = { ...form, files: [...(form.files || []), u] };
+      setForm(newForm);
+      if (!editing) saveItem(newForm); // save immediately if not in edit mode
+    } catch (err) { alert('Upload failed: ' + err.message); }
+    setUploading(false);
+  };
+
+  const removeFile = async (file) => {
+    if (!confirm(`Remove ${file.name}?`)) return;
+    try { await deleteFile(file.path); } catch {}
+    const newForm = { ...form, files: (form.files || []).filter(f => f.path !== file.path) };
+    setForm(newForm);
+    if (!editing) saveItem(newForm);
+  };
+
+  const autoMap = () => {
+    if (form.title) setForm({ ...form, mapUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(form.title)}` });
+  };
+
+  // Sub-place handlers
+  const savePlace = (place) => {
+    const exists = (form.places || []).find(p => p.id === place.id);
+    const newPlaces = exists ? form.places.map(p => p.id === place.id ? place : p) : [...(form.places || []), place];
+    const newForm = { ...form, places: newPlaces };
+    setForm(newForm);
+    saveItem(newForm); // save instantly for places
+  };
+  const togglePlaceVisited = (placeId) => {
+    const newPlaces = (form.places || []).map(p => p.id === placeId ? { ...p, visited: !p.visited } : p);
+    const newForm = { ...form, places: newPlaces };
+    setForm(newForm);
+    saveItem(newForm);
+  };
+  const deletePlace = (placeId) => {
+    const newPlaces = (form.places || []).filter(p => p.id !== placeId);
+    const newForm = { ...form, places: newPlaces };
+    setForm(newForm);
+    saveItem(newForm);
+  };
+
+  const [addingPlace, setAddingPlace] = useState(false);
+  const [editingPlace, setEditingPlace] = useState(null);
+
+  // VIEW MODE
+  if (!editing) {
+    return (
+      <div className="fade-in">
+        <button onClick={onBack} className="sans flex items-center gap-1 text-sm mb-5 font-semibold" style={{ color: 'var(--accent)' }}>
+          <ChevronLeft size={16} /> Back to {day.title}
+        </button>
+
+        <div className="flex items-center gap-3 mb-3">
+          <div className="flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(192, 48, 40, 0.12)' }}>
+            <Icon size={22} style={{ color: 'var(--accent)' }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>{item.type}</div>
+            <div className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{fmtDateLong(day.date)}</div>
+          </div>
+        </div>
+
+        <h2 className="text-3xl font-bold leading-tight mb-3" style={{ color: 'var(--primary)' }}>{item.title}</h2>
+
+        <div className="flex flex-wrap gap-2 mb-4">
+          <StatusChip status={item.status} />
+          {item.owner && item.owner !== 'EVERYONE' && (
+            <span className="chip" style={{ background: 'rgba(30, 42, 74, 0.08)', color: 'var(--primary)' }}>
+              {item.owner === 'TM' ? 'Tim & Michelle' : 'Caroline & David'}
+            </span>
+          )}
+          {item.owner === 'EVERYONE' && (
+            <span className="chip" style={{ background: 'rgba(30, 42, 74, 0.08)', color: 'var(--primary)' }}>Everyone</span>
+          )}
+        </div>
+
+        {item.time && (
+          <div className="detail-field">
+            <div className="detail-field-label">Time</div>
+            <div className="detail-field-value">{item.time}</div>
+          </div>
+        )}
+
+        {item.note && (
+          <div className="detail-field">
+            <div className="detail-field-label">Notes</div>
+            <div className="detail-field-value" style={{ whiteSpace: 'pre-wrap' }}>{item.note}</div>
+          </div>
+        )}
+
+        {item.mapUrl && (
+          <div className="detail-field">
+            <div className="detail-field-label">Map</div>
+            <a href={item.mapUrl} target="_blank" rel="noreferrer" className="sans inline-flex items-center gap-2 font-bold" style={{ color: 'var(--accent)', fontSize: '16px' }}>
+              <MapPin size={18} /> Open in Google Maps
+            </a>
+          </div>
+        )}
+
+        {/* Places */}
+        <div className="detail-field">
+          <div className="detail-field-label flex items-center justify-between">
+            <span>Places ({(item.places || []).length})</span>
+            <button onClick={() => setAddingPlace(true)} className="sans normal-case tracking-normal font-bold" style={{ color: 'var(--accent)' }}>+ Add</button>
+          </div>
+          {(!item.places || item.places.length === 0) ? (
+            <div className="sans text-sm italic" style={{ color: 'var(--text-soft)' }}>No places yet — add specific shops, viewpoints, or stops within this activity.</div>
+          ) : (
+            <div className="space-y-2 mt-2">
               {item.places.map(p => (
-                <div key={p.id} className="flex items-start gap-2 text-xs sans py-1">
-                  <button onClick={() => togglePlaceVisited(p.id)} className="flex-shrink-0 mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center" style={{ borderColor: 'var(--indigo)', background: p.visited ? 'var(--indigo)' : 'transparent' }}>
-                    {p.visited && <CheckCircle2 size={10} style={{ color: 'var(--cream)' }} />}
+                <div key={p.id} className="flex items-start gap-2 p-2 rounded-lg" style={{ background: 'var(--card)', textDecoration: p.visited ? 'line-through' : 'none', opacity: p.visited ? 0.6 : 1 }}>
+                  <button onClick={() => togglePlaceVisited(p.id)} className="flex-shrink-0 mt-1 w-5 h-5 rounded-full border-2 flex items-center justify-center" style={{ borderColor: 'var(--primary)', background: p.visited ? 'var(--primary)' : 'transparent' }}>
+                    {p.visited && <CheckCircle2 size={12} style={{ color: 'var(--bg)' }} />}
                   </button>
-                  <div className="flex-1 min-w-0" style={{ textDecoration: p.visited ? 'line-through' : 'none', opacity: p.visited ? 0.55 : 1 }}>
-                    <div className="font-semibold" style={{ color: 'var(--indigo)' }}>{p.name}</div>
-                    {p.note && <div style={{ color: 'var(--sumi-soft)' }}>{p.note}</div>}
+                  <div className="flex-1 min-w-0">
+                    <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{p.name}</div>
+                    {p.note && <div className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{p.note}</div>}
                   </div>
-                  {p.mapUrl && <a href={p.mapUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--vermillion)' }}><MapPin size={11} /></a>}
-                  <button onClick={() => setEditingPlace(p)} style={{ color: 'var(--sumi-soft)' }}><Edit3 size={11} /></button>
-                  <button onClick={() => deletePlace(p.id)} style={{ color: 'var(--sumi-soft)' }}><X size={11} /></button>
+                  {p.mapUrl && <a href={p.mapUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}><MapPin size={14} /></a>}
+                  <button onClick={() => setEditingPlace(p)} style={{ color: 'var(--text-soft)' }}><Edit3 size={13} /></button>
+                  <button onClick={() => deletePlace(p.id)} style={{ color: 'var(--text-soft)' }}><X size={13} /></button>
                 </div>
               ))}
             </div>
           )}
-          <div className="flex gap-3 mt-2 flex-wrap">
-            {item.mapUrl && <a href={item.mapUrl} target="_blank" rel="noreferrer" className="sans text-[11px] font-semibold flex items-center gap-1" style={{ color: 'var(--vermillion)' }}><MapPin size={11} /> Map</a>}
-            <button onClick={() => setAddingPlace(true)} className="sans text-[11px] font-semibold flex items-center gap-1" style={{ color: 'var(--indigo)' }}><Plus size={11} /> Place</button>
-            <button onClick={onTogglePin} className="sans text-[11px] font-semibold flex items-center gap-1" style={{ color: isPinned ? '#8a6b26' : 'var(--sumi-soft)' }}><Pin size={11} /> {isPinned ? 'Unpin' : 'Pin'}</button>
-            <button onClick={onEdit} className="sans text-[11px] font-semibold flex items-center gap-1" style={{ color: 'var(--indigo)' }}><Edit3 size={11} /> Edit</button>
-            <button onClick={onDelete} className="sans text-[11px] font-semibold flex items-center gap-1" style={{ color: 'var(--sumi-soft)' }}><Trash2 size={11} /> Delete</button>
-          </div>
         </div>
+
+        {/* Files */}
+        <div className="detail-field">
+          <div className="detail-field-label">Attachments</div>
+          <FileUploader files={item.files || []} onUpload={handleUpload} onRemove={removeFile} uploading={uploading} />
+        </div>
+
+        <button onClick={() => setEditing(true)} className="detail-edit-btn">
+          <Edit3 size={18} className="inline mr-2" /> Edit this item
+        </button>
+
+        <button onClick={deleteItem} className="sans w-full mt-3 py-3 rounded-xl border font-bold text-sm" style={{ borderColor: 'var(--card-border)', color: 'var(--text-soft)' }}>
+          <Trash2 size={14} className="inline mr-2" /> Delete item
+        </button>
+
+        {(addingPlace || editingPlace) && (
+          <PlaceEditor place={editingPlace || { id: uid(), name: '', note: '', mapUrl: '', visited: false }} onSave={(p) => { savePlace(p); setAddingPlace(false); setEditingPlace(null); }} onClose={() => { setAddingPlace(false); setEditingPlace(null); }} />
+        )}
       </div>
-      {(addingPlace || editingPlace) && (
-        <PlaceEditor place={editingPlace || { id: uid(), name: '', note: '', mapUrl: '', visited: false }} onSave={savePlace} onClose={() => { setAddingPlace(false); setEditingPlace(null); }} />
-      )}
+    );
+  }
+
+  // EDIT MODE — inline form
+  return (
+    <div className="fade-in">
+      <button onClick={() => { setForm(item); setEditing(false); }} className="sans flex items-center gap-1 text-sm mb-5 font-semibold" style={{ color: 'var(--accent)' }}>
+        <ChevronLeft size={16} /> Cancel edit
+      </button>
+
+      <h2 className="text-2xl font-bold mb-4" style={{ color: 'var(--primary)' }}>Edit item</h2>
+
+      <Field label="Type">
+        <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="activity">Activity / Ticket</option>
+          <option value="restaurant">Restaurant</option>
+          <option value="place">Place</option>
+          <option value="flight">Flight</option>
+          <option value="hotel">Hotel</option>
+          <option value="transport">Transport</option>
+          <option value="document">Document / Logistics</option>
+          <option value="note">Note</option>
+        </select>
+      </Field>
+      <Field label="Title">
+        <input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+      </Field>
+      <Field label="Time">
+        <input value={form.time || ''} onChange={e => setForm({ ...form, time: e.target.value })} placeholder="09:00 or AM" className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+      </Field>
+      <Field label="Status">
+        <select value={form.status || ''} onChange={e => setForm({ ...form, status: e.target.value })} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="">— No status —</option>
+          <option value="confirmed">Confirmed</option>
+          <option value="booked">Booked</option>
+          <option value="tbd">TBD</option>
+          <option value="urgent">Urgent</option>
+          <option value="done">Done</option>
+        </select>
+      </Field>
+      <Field label="Who is this for?">
+        <select value={form.owner || 'EVERYONE'} onChange={e => setForm({ ...form, owner: e.target.value })} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="EVERYONE">Everyone</option>
+          <option value="TM">Tim & Michelle only</option>
+          <option value="CD">Caroline & David only</option>
+        </select>
+      </Field>
+      <Field label="Notes">
+        <textarea value={form.note || ''} onChange={e => setForm({ ...form, note: e.target.value })} rows={4} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+      </Field>
+      <Field label="Google Maps URL">
+        <input value={form.mapUrl || ''} onChange={e => setForm({ ...form, mapUrl: e.target.value })} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+        <button onClick={autoMap} className="sans text-xs font-semibold mt-2" style={{ color: 'var(--accent)' }}>Auto-generate from title</button>
+      </Field>
+
+      <div className="flex gap-2 mt-6">
+        <button onClick={() => { setForm(item); setEditing(false); }} className="sans flex-1 py-3 rounded-xl border font-bold text-base" style={{ borderColor: 'var(--card-border)', color: 'var(--text)' }}>Cancel</button>
+        <button onClick={onSaveEdit} className="btn-primary sans flex-1 py-3 rounded-xl font-bold text-base">
+          <Save size={16} className="inline mr-1" /> Save
+        </button>
+      </div>
     </div>
   );
 }
@@ -800,34 +1318,11 @@ function PlaceEditor({ place, onSave, onClose }) {
       <Field label="Note / category"><TextInput value={p.note} onChange={v => set('note', v)} placeholder="e.g. Stationery" /></Field>
       <Field label="Google Maps URL">
         <TextInput value={p.mapUrl} onChange={v => set('mapUrl', v)} />
-        <button onClick={autoMap} className="sans text-[11px] font-semibold mt-2" style={{ color: 'var(--vermillion)' }}>Auto-generate from name</button>
+        <button onClick={autoMap} className="sans text-[11px] font-semibold mt-2" style={{ color: 'var(--accent)' }}>Auto-generate from name</button>
       </Field>
       <EditorButtons onSave={() => onSave(p)} onClose={onClose} />
     </Modal>
   );
-}
-
-function BookingMiniCard({ booking }) {
-  return (
-    <div className="bg-white rounded-lg p-3 card-shadow">
-      <div className="flex items-center gap-2 flex-wrap">
-        <div className="sans text-sm font-bold flex-1" style={{ color: 'var(--indigo)' }}>{booking.title}</div>
-        <StatusChip status={booking.status} />
-      </div>
-      {booking.detail && <div className="sans text-xs mt-1" style={{ color: 'var(--sumi-soft)' }}>{booking.detail}</div>}
-      {booking.notes && <div className="sans text-xs mt-1" style={{ color: 'var(--sumi)' }}>{booking.notes}</div>}
-      {booking.files?.length > 0 && <FileList files={booking.files} />}
-    </div>
-  );
-}
-
-function StatusChip({ status }) {
-  if (!status) return null;
-  if (status === 'confirmed' || status === 'booked') return <span className="chip chip-confirmed"><CheckCircle2 size={10} /> {status}</span>;
-  if (status === 'tbd') return <span className="chip chip-tbd"><Clock size={10} /> TBD</span>;
-  if (status === 'urgent') return <span className="chip chip-urgent"><AlertCircle size={10} /> Urgent</span>;
-  if (status === 'done') return <span className="chip chip-done"><CheckCircle2 size={10} /> Done</span>;
-  return null;
 }
 
 /* ========================= DAY BAG / WISHES / IDEAS / RATING ========================= */
@@ -845,18 +1340,16 @@ function DayBagSection({ day, template, onUpdateDay }) {
     onUpdateDay({ ...day, dayBagExtras: [...(day.dayBagExtras || []), { id: uid(), text: newExtra.trim() }] });
     setNewExtra('');
   };
-  const removeExtra = (id) => {
-    onUpdateDay({ ...day, dayBagExtras: (day.dayBagExtras || []).filter(e => e.id !== id) });
-  };
+  const removeExtra = (id) => onUpdateDay({ ...day, dayBagExtras: (day.dayBagExtras || []).filter(e => e.id !== id) });
   const remaining = allItems.filter(i => !done[i.id]).length;
 
   return (
     <div className="mt-6 bg-white rounded-xl card-shadow overflow-hidden">
       <button onClick={() => setOpen(o => !o)} className="w-full p-4 flex items-center justify-between text-left">
         <div>
-          <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--vermillion)' }}>Day bag</div>
-          <div className="font-bold mt-0.5" style={{ color: 'var(--indigo)' }}>What to pack today</div>
-          <div className="sans text-xs mt-0.5" style={{ color: 'var(--sumi-soft)' }}>{remaining} of {allItems.length} still to pack</div>
+          <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>Day bag</div>
+          <div className="font-bold mt-0.5" style={{ color: 'var(--primary)' }}>What to pack today</div>
+          <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{remaining} of {allItems.length} still to pack</div>
         </div>
         {open ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
       </button>
@@ -866,20 +1359,17 @@ function DayBagSection({ day, template, onUpdateDay }) {
             {allItems.map(it => (
               <div key={it.id} className="flex items-center gap-2 text-sm sans py-1">
                 <button onClick={() => togglePack(it.id)} className="flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center" style={{ borderColor: '#2d8659', background: done[it.id] ? '#2d8659' : 'transparent' }}>
-                  {done[it.id] && <CheckCircle2 size={12} style={{ color: 'var(--cream)' }} />}
+                  {done[it.id] && <CheckCircle2 size={12} style={{ color: 'var(--bg)' }} />}
                 </button>
-                <span style={{ textDecoration: done[it.id] ? 'line-through' : 'none', opacity: done[it.id] ? 0.5 : 1, color: 'var(--sumi)' }}>{it.text}</span>
-                {it.source === 'extra' && (
-                  <button onClick={() => removeExtra(it.id)} className="ml-auto" style={{ color: 'var(--sumi-soft)' }}><X size={12} /></button>
-                )}
+                <span style={{ textDecoration: done[it.id] ? 'line-through' : 'none', opacity: done[it.id] ? 0.5 : 1, color: 'var(--text)' }}>{it.text}</span>
+                {it.source === 'extra' && <button onClick={() => removeExtra(it.id)} className="ml-auto" style={{ color: 'var(--text-soft)' }}><X size={12} /></button>}
               </div>
             ))}
           </div>
           <div className="flex gap-2 mt-3">
-            <input value={newExtra} onChange={e => setNewExtra(e.target.value)} onKeyDown={e => e.key === 'Enter' && addExtra()} placeholder="Add something extra for today…" className="sans flex-1 p-2 rounded-lg border text-xs" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} />
+            <input value={newExtra} onChange={e => setNewExtra(e.target.value)} onKeyDown={e => e.key === 'Enter' && addExtra()} placeholder="Add something extra…" className="sans flex-1 p-2 rounded-lg border text-xs" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
             <button onClick={addExtra} className="btn-primary sans px-3 rounded-lg text-xs font-bold"><Plus size={12} /></button>
           </div>
-          <div className="sans text-[10px] mt-3 italic" style={{ color: 'var(--sumi-soft)' }}>Template items show every day. Extras are just for today.</div>
         </div>
       )}
     </div>
@@ -898,22 +1388,18 @@ function WishesSection({ day, onUpdateDay }) {
   const remove = (id) => onUpdateDay({ ...day, wishes: wishes.filter(w => w.id !== id) });
   return (
     <div className="mt-4 bg-white rounded-xl p-4 card-shadow">
-      <div className="sans text-[10px] uppercase tracking-widest font-bold flex items-center gap-1" style={{ color: 'var(--vermillion)' }}>
-        <Heart size={12} /> Wishes for today
-      </div>
+      <div className="sans text-[10px] uppercase tracking-widest font-bold flex items-center gap-1" style={{ color: 'var(--accent)' }}><Heart size={12} /> Wishes for today</div>
       <div className="space-y-1.5 mt-2">
         {wishes.map(w => (
           <div key={w.id} className="flex items-start gap-2 text-xs sans py-1">
-            <span className="flex-1" style={{ color: 'var(--sumi)' }}>
-              {w.by && <strong style={{ color: 'var(--indigo)' }}>{w.by}: </strong>}{w.text}
-            </span>
-            <button onClick={() => remove(w.id)} style={{ color: 'var(--sumi-soft)' }}><X size={12} /></button>
+            <span className="flex-1" style={{ color: 'var(--text)' }}>{w.by && <strong style={{ color: 'var(--primary)' }}>{w.by}: </strong>}{w.text}</span>
+            <button onClick={() => remove(w.id)} style={{ color: 'var(--text-soft)' }}><X size={12} /></button>
           </div>
         ))}
       </div>
       <div className="flex gap-2 mt-3">
-        <input value={by} onChange={e => setBy(e.target.value)} placeholder="Name (opt)" className="sans w-24 p-2 rounded-lg border text-xs" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} />
-        <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} placeholder="A wish for today…" className="sans flex-1 p-2 rounded-lg border text-xs" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} />
+        <input value={by} onChange={e => setBy(e.target.value)} placeholder="Name (opt)" className="sans w-24 p-2 rounded-lg border text-xs" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+        <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} placeholder="A wish…" className="sans flex-1 p-2 rounded-lg border text-xs" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
         <button onClick={add} className="btn-primary sans px-3 rounded-lg text-xs font-bold"><Plus size={12} /></button>
       </div>
     </div>
@@ -932,25 +1418,19 @@ function IdeasSection({ day, onUpdateDay, onPromote }) {
   const remove = (id) => onUpdateDay({ ...day, ideas: ideas.filter(i => i.id !== id) });
   return (
     <div className="mt-4 bg-white rounded-xl p-4 card-shadow">
-      <div className="sans text-[10px] uppercase tracking-widest font-bold flex items-center gap-1" style={{ color: 'var(--vermillion)' }}>
-        <Lightbulb size={12} /> Ideas (not yet planned)
-      </div>
+      <div className="sans text-[10px] uppercase tracking-widest font-bold flex items-center gap-1" style={{ color: 'var(--accent)' }}><Lightbulb size={12} /> Ideas (not yet planned)</div>
       <div className="space-y-1.5 mt-2">
         {ideas.map(idea => (
-          <div key={idea.id} className="flex items-start gap-2 text-xs sans py-1.5 border-b" style={{ borderColor: 'rgba(30, 42, 74, 0.06)' }}>
-            <span className="flex-1" style={{ color: 'var(--sumi)' }}>
-              {idea.by && <strong style={{ color: 'var(--indigo)' }}>{idea.by}: </strong>}{idea.text}
-            </span>
-            <button onClick={() => onPromote(idea)} className="font-semibold flex items-center gap-1" style={{ color: 'var(--vermillion)' }} title="Promote to plan">
-              <ArrowRight size={11} /> Plan
-            </button>
-            <button onClick={() => remove(idea.id)} style={{ color: 'var(--sumi-soft)' }}><X size={12} /></button>
+          <div key={idea.id} className="flex items-start gap-2 text-xs sans py-1.5 border-b" style={{ borderColor: 'var(--card-border)' }}>
+            <span className="flex-1" style={{ color: 'var(--text)' }}>{idea.by && <strong style={{ color: 'var(--primary)' }}>{idea.by}: </strong>}{idea.text}</span>
+            <button onClick={() => onPromote(idea)} className="font-semibold flex items-center gap-1" style={{ color: 'var(--accent)' }}><ArrowRight size={11} /> Plan</button>
+            <button onClick={() => remove(idea.id)} style={{ color: 'var(--text-soft)' }}><X size={12} /></button>
           </div>
         ))}
       </div>
       <div className="flex gap-2 mt-3">
-        <input value={by} onChange={e => setBy(e.target.value)} placeholder="Name (opt)" className="sans w-24 p-2 rounded-lg border text-xs" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} />
-        <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} placeholder="A new idea…" className="sans flex-1 p-2 rounded-lg border text-xs" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} />
+        <input value={by} onChange={e => setBy(e.target.value)} placeholder="Name (opt)" className="sans w-24 p-2 rounded-lg border text-xs" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+        <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} placeholder="A new idea…" className="sans flex-1 p-2 rounded-lg border text-xs" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
         <button onClick={add} className="btn-primary sans px-3 rounded-lg text-xs font-bold"><Plus size={12} /></button>
       </div>
     </div>
@@ -961,115 +1441,15 @@ function DayRatingDiary({ day, onUpdateDay }) {
   const rating = day.rating || 0;
   return (
     <div className="mt-4 bg-white rounded-xl p-4 card-shadow">
-      <div className="sans text-[10px] uppercase tracking-widest font-bold flex items-center gap-1" style={{ color: 'var(--vermillion)' }}>
-        <Star size={12} /> How was today?
-      </div>
+      <div className="sans text-[10px] uppercase tracking-widest font-bold flex items-center gap-1" style={{ color: 'var(--accent)' }}><Star size={12} /> How was today?</div>
       <div className="flex items-center gap-1 mt-2">
         {[1, 2, 3, 4, 5].map(n => (
           <button key={n} className="star-btn" onClick={() => onUpdateDay({ ...day, rating: n === rating ? 0 : n })}>
-            <Star size={20} fill={n <= rating ? '#b8923d' : 'transparent'} stroke="#b8923d" />
+            <Star size={20} fill={n <= rating ? 'var(--gold)' : 'transparent'} stroke="var(--gold)" />
           </button>
         ))}
       </div>
-      <textarea
-        value={day.diary || ''}
-        onChange={e => onUpdateDay({ ...day, diary: e.target.value })}
-        rows={2}
-        placeholder="One line about today (optional)…"
-        className="sans w-full mt-2 p-2 rounded-lg border text-xs"
-        style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }}
-      />
-    </div>
-  );
-}
-
-/* ========================= ITEM EDITOR ========================= */
-function ItemEditor({ item, dayDate, onSave, onClose }) {
-  const [form, setForm] = useState(item);
-  const [uploading, setUploading] = useState(false);
-  const autoMap = () => {
-    if (form.title) setForm({ ...form, mapUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(form.title)}` });
-  };
-  const handleUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      const u = await uploadFile(file, `day-${dayDate}`);
-      setForm({ ...form, files: [...(form.files || []), u] });
-    } catch (err) { alert('Upload failed: ' + err.message); }
-    setUploading(false);
-  };
-  const removeFile = async (file) => {
-    if (!confirm(`Remove ${file.name}?`)) return;
-    try { await deleteFile(file.path); } catch (e) {}
-    setForm({ ...form, files: (form.files || []).filter(f => f.path !== file.path) });
-  };
-  return (
-    <Modal onClose={onClose} title={item.title ? 'Edit item' : 'New item'}>
-      <Field label="Type">
-        <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }}>
-          <option value="activity">Activity / Ticket</option>
-          <option value="restaurant">Restaurant</option>
-          <option value="place">Place</option>
-          <option value="flight">Flight</option>
-          <option value="hotel">Hotel</option>
-          <option value="transport">Transport</option>
-          <option value="document">Document / Logistics</option>
-          <option value="note">Note</option>
-        </select>
-      </Field>
-      <Field label="Status">
-        <select value={form.status || ''} onChange={e => setForm({ ...form, status: e.target.value })} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }}>
-          <option value="">— No status —</option>
-          <option value="confirmed">Confirmed</option>
-          <option value="booked">Booked</option>
-          <option value="tbd">TBD</option>
-          <option value="urgent">Urgent</option>
-          <option value="done">Done</option>
-        </select>
-      </Field>
-      <Field label="Time"><TextInput value={form.time} onChange={v => setForm({ ...form, time: v })} placeholder="09:00 or AM" /></Field>
-      <Field label="Title"><TextInput value={form.title} onChange={v => setForm({ ...form, title: v })} /></Field>
-      <Field label="Notes"><textarea value={form.note || ''} onChange={e => setForm({ ...form, note: e.target.value })} rows={3} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} /></Field>
-      <Field label="Google Maps URL">
-        <TextInput value={form.mapUrl} onChange={v => setForm({ ...form, mapUrl: v })} />
-        <button onClick={autoMap} className="sans text-[11px] font-semibold mt-2" style={{ color: 'var(--vermillion)' }}>Auto-generate from title</button>
-      </Field>
-      <Field label="Attachments (PDFs, photos)">
-        <FileUploader files={form.files || []} onUpload={handleUpload} onRemove={removeFile} uploading={uploading} />
-      </Field>
-      <EditorButtons onSave={() => onSave(form)} onClose={onClose} />
-    </Modal>
-  );
-}
-
-/* ========================= FILE HANDLING ========================= */
-function FileUploader({ files, onUpload, onRemove, uploading }) {
-  return (
-    <div>
-      <label className="sans flex items-center justify-center gap-2 p-3 rounded border-2 border-dashed cursor-pointer text-xs font-semibold" style={{ borderColor: 'rgba(30, 42, 74, 0.25)', color: 'var(--indigo)' }}>
-        <Upload size={14} />
-        {uploading ? 'Uploading…' : 'Upload file'}
-        <input type="file" className="hidden" onChange={onUpload} accept="image/*,application/pdf,.doc,.docx" />
-      </label>
-      <FileList files={files} onRemove={onRemove} />
-    </div>
-  );
-}
-
-function FileList({ files, onRemove }) {
-  if (!files || files.length === 0) return null;
-  return (
-    <div className="mt-2 space-y-1.5">
-      {files.map(f => (
-        <div key={f.path} className="flex items-center gap-2 p-2 rounded text-xs sans" style={{ background: 'rgba(30, 42, 74, 0.04)' }}>
-          <Paperclip size={12} style={{ color: 'var(--indigo)' }} />
-          <a href={f.url} target="_blank" rel="noreferrer" className="flex-1 truncate font-semibold" style={{ color: 'var(--indigo)' }}>{f.name}</a>
-          <span style={{ color: 'var(--sumi-soft)' }}>{Math.round(f.size / 1024)}KB</span>
-          {onRemove && <button onClick={() => onRemove(f)} style={{ color: 'var(--sumi-soft)' }}><X size={12} /></button>}
-        </div>
-      ))}
+      <textarea value={day.diary || ''} onChange={e => onUpdateDay({ ...day, diary: e.target.value })} rows={2} placeholder="One line about today (optional)…" className="sans w-full mt-2 p-2 rounded-lg border text-xs" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
     </div>
   );
 }
@@ -1077,486 +1457,362 @@ function FileList({ files, onRemove }) {
 /* ========================= TRAVEL ========================= */
 function TravelTab({ data, onSave }) {
   const [editingFlight, setEditingFlight] = useState(null);
-  const [addingFlight, setAddingFlight] = useState(false);
   const [editingHotel, setEditingHotel] = useState(null);
-  const [addingHotel, setAddingHotel] = useState(false);
 
   const saveFlight = (f) => {
-    const exists = data.flights.find(x => x.id === f.id);
-    onSave({ ...data, flights: exists ? data.flights.map(x => x.id === f.id ? f : x) : [...data.flights, f] });
-    setEditingFlight(null); setAddingFlight(false);
+    const flights = data.flights.find(x => x.id === f.id) ? data.flights.map(x => x.id === f.id ? f : x) : [...data.flights, f];
+    onSave({ ...data, flights });
+    setEditingFlight(null);
   };
-  const deleteFlight = (id) => { if (confirm('Delete flight?')) onSave({ ...data, flights: data.flights.filter(f => f.id !== id) }); };
   const saveHotel = (h) => {
-    const exists = data.accommodation.find(x => x.id === h.id);
-    onSave({ ...data, accommodation: exists ? data.accommodation.map(x => x.id === h.id ? h : x) : [...data.accommodation, h] });
-    setEditingHotel(null); setAddingHotel(false);
-  };
-  const deleteHotel = (id) => { if (confirm('Delete?')) onSave({ ...data, accommodation: data.accommodation.filter(h => h.id !== id) }); };
-
-  // Flight tracker URL helper
-  const flightStatusUrl = (f) => {
-    if (!f.flightNo || f.flightNo === 'TBD') return '';
-    return `https://www.flightradar24.com/${encodeURIComponent(f.flightNo)}`;
+    const accommodation = data.accommodation.find(x => x.id === h.id) ? data.accommodation.map(x => x.id === h.id ? h : x) : [...data.accommodation, h];
+    onSave({ ...data, accommodation });
+    setEditingHotel(null);
   };
 
   return (
     <div className="space-y-6 fade-in">
       <section>
-        <SectionHeader title="Flights" onAdd={() => setAddingFlight(true)} />
-        <div className="space-y-3 mt-3">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Flights</h2>
+          <button onClick={() => setEditingFlight({ id: uid(), type: '', airline: '', flightNo: '', from: '', to: '', departDate: '', departTime: '', arriveTime: '', ref: '', seat: '', status: 'tbd', manageUrl: '', note: '', files: [] })} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
+        </div>
+        <div className="space-y-3">
           {data.flights.map(f => (
-            <div key={f.id} className="bg-white rounded-2xl p-4 card-shadow">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="sans text-[10px] uppercase tracking-widest font-semibold" style={{ color: 'var(--vermillion)' }}>{f.type}</div>
-                    <StatusChip status={f.status} />
+            <div key={f.id} className="bg-white rounded-xl p-4 card-shadow">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1">
+                  <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>{f.type}</div>
+                  <div className="font-bold mt-1" style={{ color: 'var(--primary)' }}>{f.airline} {f.flightNo}</div>
+                  <div className="sans text-sm mt-1" style={{ color: 'var(--text)' }}>{f.from} → {f.to}</div>
+                  <div className="sans text-xs mt-1" style={{ color: 'var(--text-soft)' }}>{fmtDate(f.departDate)} · {f.departTime} → {f.arriveTime}{f.arriveDate && f.arriveDate !== f.departDate ? ` (${fmtDate(f.arriveDate)})` : ''}</div>
+                  <div className="flex items-center gap-3 mt-2 sans text-[11px]" style={{ color: 'var(--text-soft)' }}>
+                    {f.ref && f.ref !== 'TBD' && <span>Ref: <strong style={{ color: 'var(--primary)' }}>{f.ref}</strong></span>}
+                    {f.seat && f.seat !== 'TBD' && <span>Seat: <strong style={{ color: 'var(--primary)' }}>{f.seat}</strong></span>}
                   </div>
-                  <div className="text-lg font-bold mt-0.5" style={{ color: 'var(--indigo)' }}>{f.airline} · {f.flightNo}</div>
+                  {f.note && <div className="sans text-xs italic mt-2" style={{ color: 'var(--text-soft)' }}>{f.note}</div>}
+                  {f.files?.length > 0 && <FileList files={f.files} />}
                 </div>
-                <Plane size={18} style={{ color: 'var(--vermillion)' }} />
-              </div>
-              <div className="divider my-3" />
-              <div className="grid grid-cols-2 gap-3 sans text-xs" style={{ color: 'var(--sumi)' }}>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--sumi-soft)' }}>Depart</div>
-                  <div className="font-bold text-sm mt-0.5">{f.departTime}</div>
-                  <div className="mt-0.5">{f.from}</div>
-                  <div style={{ color: 'var(--sumi-soft)' }}>{f.departDate && fmtDate(f.departDate)}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--sumi-soft)' }}>Arrive</div>
-                  <div className="font-bold text-sm mt-0.5">{f.arriveTime}</div>
-                  <div className="mt-0.5">{f.to}</div>
+                <div className="flex flex-col items-end gap-1">
+                  <StatusChip status={f.status} />
+                  <button onClick={() => setEditingFlight(f)} className="sans text-[10px] font-semibold mt-1" style={{ color: 'var(--accent)' }}>Edit</button>
                 </div>
               </div>
-              {(f.ref || f.seat) && (
-                <div className="mt-3 grid grid-cols-2 gap-3 sans text-[11px]" style={{ color: 'var(--sumi)' }}>
-                  {f.ref && <div><span style={{ color: 'var(--sumi-soft)' }}>Ref: </span><span className="font-mono">{f.ref}</span></div>}
-                  {f.seat && <div><span style={{ color: 'var(--sumi-soft)' }}>Seats: </span>{f.seat}</div>}
-                </div>
+              {f.manageUrl && (
+                <a href={f.manageUrl} target="_blank" rel="noreferrer" className="sans text-xs font-semibold mt-3 inline-flex items-center gap-1" style={{ color: 'var(--accent)' }}>
+                  <ExternalLink size={11} /> Manage booking
+                </a>
               )}
-              {f.note && <div className="sans text-xs mt-2 leading-relaxed" style={{ color: 'var(--sumi-soft)' }}>{f.note}</div>}
-              {f.files && f.files.length > 0 && <FileList files={f.files} />}
-
-              {/* Action buttons row */}
-              <div className="flex flex-wrap gap-2 mt-3">
-                {flightStatusUrl(f) && (
-                  <a href={flightStatusUrl(f)} target="_blank" rel="noreferrer" className="sans text-[11px] font-bold px-3 py-1.5 rounded-full flex items-center gap-1" style={{ background: 'rgba(30, 42, 74, 0.08)', color: 'var(--indigo)' }}>
-                    <ExternalLink size={11} /> Check status
-                  </a>
-                )}
-                {f.manageUrl && (
-                  <a href={f.manageUrl} target="_blank" rel="noreferrer" className="sans text-[11px] font-bold px-3 py-1.5 rounded-full flex items-center gap-1" style={{ background: 'rgba(192, 48, 40, 0.1)', color: 'var(--vermillion)' }}>
-                    <ExternalLink size={11} /> Manage booking
-                  </a>
-                )}
-              </div>
-
-              <div className="flex gap-3 mt-3">
-                <button onClick={() => setEditingFlight(f)} className="sans text-[11px] font-semibold" style={{ color: 'var(--vermillion)' }}>Edit</button>
-                <button onClick={() => deleteFlight(f.id)} className="sans text-[11px] font-semibold" style={{ color: 'var(--sumi-soft)' }}>Delete</button>
-              </div>
             </div>
           ))}
         </div>
       </section>
 
       <section>
-        <SectionHeader title="Accommodation" onAdd={() => setAddingHotel(true)} />
-        <div className="space-y-3 mt-3">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Accommodation</h2>
+          <button onClick={() => setEditingHotel({ id: uid(), name: '', nameJp: '', city: '', address: '', checkIn: '', checkOut: '', ref: '', phone: '', status: 'tbd', notes: '', mapUrl: '', files: [] })} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
+        </div>
+        <div className="space-y-3">
           {data.accommodation.map(h => (
-            <div key={h.id} className="bg-white rounded-2xl p-4 card-shadow">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="sans text-[10px] uppercase tracking-widest font-semibold" style={{ color: 'var(--vermillion)' }}>{h.city}</div>
-                    <StatusChip status={h.status} />
-                  </div>
-                  <div className="text-lg font-bold mt-0.5" style={{ color: 'var(--indigo)' }}>{h.name}</div>
-                  {h.nameJp && <div className="jp text-xs mt-0.5" style={{ color: 'var(--sumi-soft)' }}>{h.nameJp}</div>}
-                  <div className="sans text-xs mt-1" style={{ color: 'var(--sumi-soft)' }}>{h.address}</div>
+            <div key={h.id} className="bg-white rounded-xl p-4 card-shadow">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1">
+                  <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>{h.city}</div>
+                  <div className="font-bold mt-1" style={{ color: 'var(--primary)' }}>{h.name}</div>
+                  {h.nameJp && <div className="jp text-xs" style={{ color: 'var(--text-soft)' }}>{h.nameJp}</div>}
+                  <div className="sans text-xs mt-1" style={{ color: 'var(--text-soft)' }}>{h.address}</div>
+                  <div className="sans text-xs mt-2" style={{ color: 'var(--text)' }}>{fmtDate(h.checkIn)} → {fmtDate(h.checkOut)}</div>
+                  {h.notes && <div className="sans text-xs italic mt-2" style={{ color: 'var(--text-soft)' }}>{h.notes}</div>}
+                  {h.mapUrl && <a href={h.mapUrl} target="_blank" rel="noreferrer" className="sans text-xs font-semibold mt-2 inline-flex items-center gap-1" style={{ color: 'var(--accent)' }}><MapPin size={11} /> Map</a>}
+                  {h.files?.length > 0 && <FileList files={h.files} />}
                 </div>
-                <Hotel size={18} style={{ color: 'var(--vermillion)' }} />
-              </div>
-              <div className="divider my-3" />
-              <div className="grid grid-cols-2 gap-3 sans text-xs" style={{ color: 'var(--sumi)' }}>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--sumi-soft)' }}>Check in</div>
-                  <div className="font-bold text-sm mt-0.5">{h.checkIn && fmtDate(h.checkIn)}</div>
+                <div className="flex flex-col items-end gap-1">
+                  <StatusChip status={h.status} />
+                  <button onClick={() => setEditingHotel(h)} className="sans text-[10px] font-semibold mt-1" style={{ color: 'var(--accent)' }}>Edit</button>
                 </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--sumi-soft)' }}>Check out</div>
-                  <div className="font-bold text-sm mt-0.5">{h.checkOut && fmtDate(h.checkOut)}</div>
-                </div>
-              </div>
-              {(h.ref || h.phone) && (
-                <div className="mt-3 grid grid-cols-2 gap-3 sans text-[11px]" style={{ color: 'var(--sumi)' }}>
-                  {h.ref && <div><span style={{ color: 'var(--sumi-soft)' }}>Ref: </span><span className="font-mono">{h.ref}</span></div>}
-                  {h.phone && <div><span style={{ color: 'var(--sumi-soft)' }}>Phone: </span><a href={`tel:${h.phone}`} style={{ color: 'var(--vermillion)' }}>{h.phone}</a></div>}
-                </div>
-              )}
-              {h.notes && <div className="sans text-xs mt-2 leading-relaxed" style={{ color: 'var(--sumi-soft)' }}>{h.notes}</div>}
-              {h.files && h.files.length > 0 && <FileList files={h.files} />}
-              <div className="flex gap-3 mt-3">
-                {h.mapUrl && <a href={h.mapUrl} target="_blank" rel="noreferrer" className="sans text-[11px] font-semibold flex items-center gap-1" style={{ color: 'var(--vermillion)' }}><MapPin size={11} /> Map</a>}
-                <button onClick={() => setEditingHotel(h)} className="sans text-[11px] font-semibold" style={{ color: 'var(--vermillion)' }}>Edit</button>
-                <button onClick={() => deleteHotel(h.id)} className="sans text-[11px] font-semibold" style={{ color: 'var(--sumi-soft)' }}>Delete</button>
               </div>
             </div>
           ))}
         </div>
       </section>
 
-      {(editingFlight || addingFlight) && (
-        <FlightEditor flight={editingFlight || { id: uid(), type: 'Outbound', airline: '', flightNo: '', from: '', to: '', departDate: '', departTime: '', arriveTime: '', ref: '', seat: '', status: '', manageUrl: '', files: [] }} onSave={saveFlight} onClose={() => { setEditingFlight(null); setAddingFlight(false); }} />
-      )}
-      {(editingHotel || addingHotel) && (
-        <HotelEditor hotel={editingHotel || { id: uid(), name: '', nameJp: '', city: '', address: '', checkIn: '', checkOut: '', ref: '', phone: '', notes: '', mapUrl: '', status: '', files: [] }} onSave={saveHotel} onClose={() => { setEditingHotel(null); setAddingHotel(false); }} />
-      )}
+      {editingFlight && <FlightEditor flight={editingFlight} onSave={saveFlight} onClose={() => setEditingFlight(null)} onDelete={editingFlight.airline ? () => { onSave({ ...data, flights: data.flights.filter(f => f.id !== editingFlight.id) }); setEditingFlight(null); } : null} />}
+      {editingHotel && <HotelEditor hotel={editingHotel} onSave={saveHotel} onClose={() => setEditingHotel(null)} onDelete={editingHotel.name ? () => { onSave({ ...data, accommodation: data.accommodation.filter(h => h.id !== editingHotel.id) }); setEditingHotel(null); } : null} />}
     </div>
   );
 }
 
-function FlightEditor({ flight, onSave, onClose }) {
+function FlightEditor({ flight, onSave, onClose, onDelete }) {
   const [f, setF] = useState(flight);
-  const [uploading, setUploading] = useState(false);
   const set = (k, v) => setF({ ...f, [k]: v });
-  const handleUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try { const u = await uploadFile(file, 'flights'); setF({ ...f, files: [...(f.files || []), u] }); } catch (err) { alert('Upload failed: ' + err.message); }
-    setUploading(false);
-  };
-  const removeFile = async (file) => {
-    if (!confirm(`Remove ${file.name}?`)) return;
-    try { await deleteFile(file.path); } catch (e) {}
-    setF({ ...f, files: (f.files || []).filter(x => x.path !== file.path) });
-  };
   return (
-    <Modal onClose={onClose} title={flight.flightNo ? 'Edit flight' : 'New flight'}>
-      <Field label="Type"><TextInput value={f.type} onChange={v => set('type', v)} /></Field>
-      <Field label="Status">
-        <select value={f.status || ''} onChange={e => set('status', e.target.value)} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }}>
-          <option value="">— No status —</option><option value="confirmed">Confirmed</option><option value="booked">Booked</option><option value="tbd">TBD</option>
-        </select>
-      </Field>
+    <Modal onClose={onClose} title={flight.airline ? 'Edit flight' : 'New flight'}>
+      <Field label="Type"><TextInput value={f.type} onChange={v => set('type', v)} placeholder="Outbound / Return / etc" /></Field>
       <Field label="Airline"><TextInput value={f.airline} onChange={v => set('airline', v)} /></Field>
       <Field label="Flight number"><TextInput value={f.flightNo} onChange={v => set('flightNo', v)} /></Field>
       <Field label="From"><TextInput value={f.from} onChange={v => set('from', v)} /></Field>
       <Field label="To"><TextInput value={f.to} onChange={v => set('to', v)} /></Field>
-      <Field label="Date"><input type="date" value={f.departDate} onChange={e => set('departDate', e.target.value)} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }} /></Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Depart"><TextInput value={f.departTime} onChange={v => set('departTime', v)} /></Field>
-        <Field label="Arrive"><TextInput value={f.arriveTime} onChange={v => set('arriveTime', v)} /></Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Depart date"><input type="date" value={f.departDate} onChange={e => set('departDate', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+        <Field label="Depart time"><TextInput value={f.departTime} onChange={v => set('departTime', v)} placeholder="HH:MM" /></Field>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Arrive date"><input type="date" value={f.arriveDate || ''} onChange={e => set('arriveDate', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+        <Field label="Arrive time"><TextInput value={f.arriveTime} onChange={v => set('arriveTime', v)} placeholder="HH:MM" /></Field>
       </div>
       <Field label="Booking ref"><TextInput value={f.ref} onChange={v => set('ref', v)} /></Field>
-      <Field label="Seats"><TextInput value={f.seat} onChange={v => set('seat', v)} /></Field>
-      <Field label="Manage booking URL"><TextInput value={f.manageUrl} onChange={v => set('manageUrl', v)} placeholder="https://..." /></Field>
-      <Field label="Notes"><textarea value={f.note || ''} onChange={e => set('note', e.target.value)} rows={2} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }} /></Field>
-      <Field label="Attachments"><FileUploader files={f.files || []} onUpload={handleUpload} onRemove={removeFile} uploading={uploading} /></Field>
-      <EditorButtons onSave={() => onSave(f)} onClose={onClose} />
+      <Field label="Seat"><TextInput value={f.seat} onChange={v => set('seat', v)} /></Field>
+      <Field label="Manage booking URL"><TextInput value={f.manageUrl || ''} onChange={v => set('manageUrl', v)} placeholder="https://..." /></Field>
+      <Field label="Status">
+        <select value={f.status} onChange={e => set('status', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="confirmed">Confirmed</option>
+          <option value="tbd">TBD</option>
+        </select>
+      </Field>
+      <Field label="Note"><textarea value={f.note || ''} onChange={e => set('note', e.target.value)} rows={2} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+      <EditorButtons onSave={() => onSave(f)} onClose={onClose} onDelete={onDelete} />
     </Modal>
   );
 }
 
-function HotelEditor({ hotel, onSave, onClose }) {
+function HotelEditor({ hotel, onSave, onClose, onDelete }) {
   const [h, setH] = useState(hotel);
-  const [uploading, setUploading] = useState(false);
   const set = (k, v) => setH({ ...h, [k]: v });
-  const autoMap = () => h.name && set('mapUrl', `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(h.name + ' ' + (h.address || ''))}`);
-  const handleUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try { const u = await uploadFile(file, 'hotels'); setH({ ...h, files: [...(h.files || []), u] }); } catch (err) { alert('Upload failed: ' + err.message); }
-    setUploading(false);
-  };
-  const removeFile = async (file) => {
-    if (!confirm(`Remove ${file.name}?`)) return;
-    try { await deleteFile(file.path); } catch (e) {}
-    setH({ ...h, files: (h.files || []).filter(x => x.path !== file.path) });
-  };
   return (
-    <Modal onClose={onClose} title={hotel.name ? 'Edit accommodation' : 'New accommodation'}>
+    <Modal onClose={onClose} title={hotel.name ? 'Edit hotel' : 'New hotel'}>
       <Field label="Name"><TextInput value={h.name} onChange={v => set('name', v)} /></Field>
-      <Field label="Japanese name (optional)"><TextInput value={h.nameJp} onChange={v => set('nameJp', v)} /></Field>
+      <Field label="Name (Japanese)"><TextInput value={h.nameJp} onChange={v => set('nameJp', v)} /></Field>
       <Field label="City"><TextInput value={h.city} onChange={v => set('city', v)} /></Field>
-      <Field label="Status">
-        <select value={h.status || ''} onChange={e => set('status', e.target.value)} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }}>
-          <option value="">— No status —</option><option value="confirmed">Confirmed</option><option value="booked">Booked</option><option value="tbd">TBD</option>
-        </select>
-      </Field>
       <Field label="Address"><TextInput value={h.address} onChange={v => set('address', v)} /></Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Check in"><input type="date" value={h.checkIn} onChange={e => set('checkIn', e.target.value)} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }} /></Field>
-        <Field label="Check out"><input type="date" value={h.checkOut} onChange={e => set('checkOut', e.target.value)} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }} /></Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Check in"><input type="date" value={h.checkIn} onChange={e => set('checkIn', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+        <Field label="Check out"><input type="date" value={h.checkOut} onChange={e => set('checkOut', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
       </div>
       <Field label="Booking ref"><TextInput value={h.ref} onChange={v => set('ref', v)} /></Field>
       <Field label="Phone"><TextInput value={h.phone} onChange={v => set('phone', v)} /></Field>
-      <Field label="Notes"><textarea value={h.notes} onChange={e => set('notes', e.target.value)} rows={3} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }} /></Field>
-      <Field label="Google Maps URL">
-        <TextInput value={h.mapUrl} onChange={v => set('mapUrl', v)} />
-        <button onClick={autoMap} className="sans text-[11px] font-semibold mt-2" style={{ color: 'var(--vermillion)' }}>Auto-generate from name</button>
+      <Field label="Map URL"><TextInput value={h.mapUrl} onChange={v => set('mapUrl', v)} /></Field>
+      <Field label="Notes"><textarea value={h.notes} onChange={e => set('notes', e.target.value)} rows={2} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+      <Field label="Status">
+        <select value={h.status} onChange={e => set('status', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="confirmed">Confirmed</option>
+          <option value="tbd">TBD</option>
+        </select>
       </Field>
-      <Field label="Attachments"><FileUploader files={h.files || []} onUpload={handleUpload} onRemove={removeFile} uploading={uploading} /></Field>
-      <EditorButtons onSave={() => onSave(h)} onClose={onClose} />
+      <EditorButtons onSave={() => onSave(h)} onClose={onClose} onDelete={onDelete} />
     </Modal>
   );
 }
 
-/* ========================= BOOKINGS ========================= */
+/* ========================= BOOKINGS (no strikethrough on done) ========================= */
 function BookingsTab({ data, onSave }) {
   const [editing, setEditing] = useState(null);
-  const [adding, setAdding] = useState(false);
   const today = TODAY();
 
-  const save = (b) => {
-    const exists = (data.bookings || []).find(x => x.id === b.id);
-    onSave({ ...data, bookings: exists ? data.bookings.map(x => x.id === b.id ? b : x) : [...(data.bookings || []), b] });
-    setEditing(null); setAdding(false);
+  const saveBooking = (b) => {
+    const bookings = (data.bookings || []).find(x => x.id === b.id) ? data.bookings.map(x => x.id === b.id ? b : x) : [...(data.bookings || []), b];
+    onSave({ ...data, bookings });
+    setEditing(null);
   };
-  const del = (id) => { if (confirm('Delete?')) onSave({ ...data, bookings: data.bookings.filter(b => b.id !== id) }); };
-  const toggleDone = (b) => save({ ...b, status: b.status === 'done' ? 'tbd' : 'done' });
+  const toggleDone = (b) => {
+    saveBooking({ ...b, status: b.status === 'done' ? 'tbd' : 'done' });
+  };
+  const remove = (id) => {
+    if (!confirm('Delete?')) return;
+    onSave({ ...data, bookings: data.bookings.filter(b => b.id !== id) });
+  };
 
-  const sortedBookings = [...(data.bookings || [])].sort((a, b) => {
-    if (a.status === 'done' && b.status !== 'done') return 1;
-    if (a.status !== 'done' && b.status === 'done') return -1;
+  const sorted = [...(data.bookings || [])].sort((a, b) => {
+    const aDone = a.status === 'done';
+    const bDone = b.status === 'done';
+    if (aDone !== bDone) return aDone ? 1 : -1;
     return (a.deadline || 'ZZ').localeCompare(b.deadline || 'ZZ');
   });
 
   return (
     <div className="fade-in">
-      <SectionHeader title="Booking checklist" onAdd={() => setAdding(true)} />
-      <div className="sans text-xs mt-1" style={{ color: 'var(--sumi-soft)' }}>Tap circle to mark done. Sorted by deadline. Today's bookings are highlighted.</div>
-      <div className="space-y-2 mt-4">
-        {sortedBookings.map(b => {
-          const done = b.status === 'done';
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Bookings to make</h2>
+        <button onClick={() => setEditing({ id: uid(), title: '', detail: '', date: '', deadline: '', status: 'tbd', notes: '', files: [] })} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
+      </div>
+
+      <div className="space-y-2">
+        {sorted.map(b => {
+          const isDone = b.status === 'done';
           const days = b.deadline ? daysUntil(b.deadline) : null;
-          const overdue = days !== null && days < 0 && !done;
-          const isToday = b.date === today;
           return (
-            <div key={b.id} className={`bg-white rounded-xl p-3 card-shadow ${isToday ? 'today-highlight' : ''}`}>
-              <div className="flex items-start gap-3">
-                <button onClick={() => toggleDone(b)} className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center mt-0.5" style={{ borderColor: done ? 'var(--indigo)' : 'var(--vermillion)', backgroundColor: done ? 'var(--indigo)' : 'transparent' }}>
-                  {done && <CheckCircle2 size={12} style={{ color: 'var(--cream)' }} />}
-                </button>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <div className={`font-bold text-sm leading-tight ${done ? 'line-through opacity-50' : ''}`} style={{ color: 'var(--indigo)' }}>{b.title}</div>
-                        {isToday && <span className="today-badge sans">Today</span>}
-                      </div>
-                      <div className="sans text-[11px] mt-0.5" style={{ color: 'var(--sumi-soft)' }}>{b.detail}</div>
-                      {b.date && <div className="sans text-[10px] mt-0.5" style={{ color: 'var(--vermillion)' }}>📅 {fmtDate(b.date)}</div>}
-                    </div>
-                    {!done && b.deadline && (
-                      <div className={`sans text-[10px] font-bold px-2 py-1 rounded-full whitespace-nowrap ${overdue || days <= 14 ? 'chip-urgent' : 'chip-tbd'}`}>
-                        {overdue ? `${Math.abs(days)}d overdue` : `${days}d`}
-                      </div>
-                    )}
-                  </div>
-                  {b.notes && <div className="sans text-[11px] mt-1.5 leading-relaxed" style={{ color: 'var(--sumi)' }}>{b.notes}</div>}
-                  {b.files?.length > 0 && <FileList files={b.files} />}
-                  <div className="flex gap-3 mt-2">
-                    <button onClick={() => setEditing(b)} className="sans text-[11px] font-semibold" style={{ color: 'var(--vermillion)' }}>Edit</button>
-                    <button onClick={() => del(b.id)} className="sans text-[11px] font-semibold" style={{ color: 'var(--sumi-soft)' }}>Delete</button>
-                  </div>
+            <div key={b.id} className="bg-white rounded-xl p-3 card-shadow flex items-start gap-3">
+              <button onClick={() => toggleDone(b)} className={`tickbox mt-0.5 ${isDone ? 'on' : ''}`}>
+                {isDone && <CheckCircle2 size={14} />}
+              </button>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="sans font-bold text-sm" style={{ color: 'var(--primary)', opacity: isDone ? 0.7 : 1 }}>{b.title}</div>
+                  {!isDone && <StatusChip status={b.status} />}
+                  {isDone && <StatusChip status="done" />}
                 </div>
+                {b.detail && <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{b.detail}</div>}
+                <div className="flex items-center gap-3 sans text-[10px] mt-1" style={{ color: 'var(--text-soft)' }}>
+                  {b.date && <span>For: {fmtDate(b.date)}</span>}
+                  {b.deadline && !isDone && <span>By: {fmtDate(b.deadline)} {days != null && `(${days}d)`}</span>}
+                </div>
+                {b.notes && <div className="sans text-xs italic mt-1" style={{ color: 'var(--text)', opacity: isDone ? 0.6 : 1 }}>{b.notes}</div>}
+                {b.files?.length > 0 && <FileList files={b.files} />}
+              </div>
+              <div className="flex flex-col gap-1">
+                <button onClick={() => setEditing(b)} style={{ color: 'var(--accent)' }}><Edit3 size={14} /></button>
+                <button onClick={() => remove(b.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={14} /></button>
               </div>
             </div>
           );
         })}
       </div>
-      {(editing || adding) && (
-        <Modal onClose={() => { setEditing(null); setAdding(false); }} title={editing ? 'Edit booking' : 'New booking'}>
-          <BookingForm initial={editing || { id: uid(), title: '', detail: '', date: '', deadline: '', status: 'tbd', notes: '', files: [] }} days={data.days} onSave={save} onClose={() => { setEditing(null); setAdding(false); }} />
-        </Modal>
-      )}
+
+      {editing && <BookingForm booking={editing} days={data.days} onSave={saveBooking} onClose={() => setEditing(null)} />}
     </div>
   );
 }
 
-function BookingForm({ initial, days, onSave, onClose }) {
-  const [b, setB] = useState(initial);
-  const [uploading, setUploading] = useState(false);
-  const handleUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try { const u = await uploadFile(file, 'bookings'); setB({ ...b, files: [...(b.files || []), u] }); } catch (err) { alert('Upload failed: ' + err.message); }
-    setUploading(false);
-  };
-  const removeFile = async (file) => {
-    if (!confirm(`Remove ${file.name}?`)) return;
-    try { await deleteFile(file.path); } catch (e) {}
-    setB({ ...b, files: (b.files || []).filter(x => x.path !== file.path) });
-  };
-  return (<>
-    <Field label="Title"><TextInput value={b.title} onChange={v => setB({ ...b, title: v })} /></Field>
-    <Field label="Detail"><TextInput value={b.detail} onChange={v => setB({ ...b, detail: v })} /></Field>
-    <Field label="Apply to which day? (optional)">
-      <select value={b.date || ''} onChange={e => setB({ ...b, date: e.target.value })} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }}>
-        <option value="">— No specific day —</option>
-        {(days || []).map(d => <option key={d.id} value={d.date}>{fmtDate(d.date)} · {d.title}</option>)}
-      </select>
-    </Field>
-    <Field label="Deadline (when to book by)"><input type="date" value={b.deadline || ''} onChange={e => setB({ ...b, deadline: e.target.value })} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }} /></Field>
-    <Field label="Status">
-      <select value={b.status} onChange={e => setB({ ...b, status: e.target.value })} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }}>
-        <option value="tbd">TBD</option><option value="urgent">Urgent</option><option value="done">Done</option>
-      </select>
-    </Field>
-    <Field label="Notes"><textarea value={b.notes || ''} onChange={e => setB({ ...b, notes: e.target.value })} rows={3} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }} /></Field>
-    <Field label="Attachments (PDF tickets, confirmations)"><FileUploader files={b.files || []} onUpload={handleUpload} onRemove={removeFile} uploading={uploading} /></Field>
-    <EditorButtons onSave={() => onSave(b)} onClose={onClose} />
-  </>);
+function BookingForm({ booking, days, onSave, onClose }) {
+  const [b, setB] = useState(booking);
+  const set = (k, v) => setB({ ...b, [k]: v });
+  return (
+    <Modal onClose={onClose} title={booking.title ? 'Edit booking' : 'New booking'}>
+      <Field label="Title"><TextInput value={b.title} onChange={v => set('title', v)} /></Field>
+      <Field label="Detail"><TextInput value={b.detail} onChange={v => set('detail', v)} /></Field>
+      <Field label="Used on (day)">
+        <select value={b.date || ''} onChange={e => set('date', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="">— None —</option>
+          {days.map(d => <option key={d.id} value={d.date}>{fmtDate(d.date)} · {d.title}</option>)}
+        </select>
+      </Field>
+      <Field label="Deadline"><input type="date" value={b.deadline || ''} onChange={e => set('deadline', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+      <Field label="Status">
+        <select value={b.status} onChange={e => set('status', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="tbd">TBD</option>
+          <option value="urgent">Urgent</option>
+          <option value="done">Done</option>
+        </select>
+      </Field>
+      <Field label="Notes"><textarea value={b.notes || ''} onChange={e => set('notes', e.target.value)} rows={2} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+      <EditorButtons onSave={() => onSave(b)} onClose={onClose} />
+    </Modal>
+  );
 }
 
 /* ========================= EXPENSES ========================= */
 function ExpensesTab({ data, onSave }) {
-  const [adding, setAdding] = useState(false);
-  const [rates, setRates] = useState(data.fxRates);
+  const [editing, setEditing] = useState(null);
+  const rates = data.fxRates;
 
   useEffect(() => {
-    if (!rates || (Date.now() - new Date(rates.fetchedAt).getTime() > 24 * 60 * 60 * 1000)) {
-      getRates().then(r => {
-        setRates(r);
-        onSave({ ...data, fxRates: r });
-      });
-    }
+    if (!rates) getRates().then(r => onSave({ ...data, fxRates: r }));
   }, []);
 
-  const expenses = data.expenses || [];
-
-  const addExpense = (exp) => {
-    const gbp = toGBP(exp.amount, exp.currency, rates);
-    onSave({ ...data, expenses: [...expenses, { ...exp, id: uid(), gbp, date: exp.date || new Date().toISOString().slice(0, 10) }] });
-    setAdding(false);
+  const save = (e) => {
+    const expenses = (data.expenses || []).find(x => x.id === e.id) ? data.expenses.map(x => x.id === e.id ? e : x) : [...(data.expenses || []), e];
+    onSave({ ...data, expenses });
+    setEditing(null);
   };
-
   const remove = (id) => {
-    if (confirm('Delete expense?')) onSave({ ...data, expenses: expenses.filter(e => e.id !== id) });
+    if (!confirm('Delete?')) return;
+    onSave({ ...data, expenses: data.expenses.filter(e => e.id !== id) });
   };
 
-  // Calculate balance
-  // Convention: payer = couple who paid the full amount. Other couple owes payer half.
+  // Net balance: T&M paid for whole-group, C&D paid for whole-group
   let tmPaid = 0, cdPaid = 0;
-  expenses.forEach(e => {
-    if (e.payer === 'TM') tmPaid += e.gbp;
-    else if (e.payer === 'CD') cdPaid += e.gbp;
+  (data.expenses || []).forEach(e => {
+    const gbp = rates ? toGBP(e.amount, e.currency, rates) : 0;
+    if (e.split === 'group') {
+      if (e.payer === 'TM') tmPaid += gbp;
+      else if (e.payer === 'CD') cdPaid += gbp;
+    }
   });
-  const totalSpent = tmPaid + cdPaid;
-  const eachShouldPay = totalSpent / 2;
-  const tmNet = tmPaid - eachShouldPay; // positive = TM is owed
-  const balance = Math.abs(tmNet);
+  const tmShare = (tmPaid + cdPaid) / 2;
+  const balance = tmShare - tmPaid; // positive = T&M owes C&D
+  const balanceText = Math.abs(balance) < 0.5 ? 'Settled' : balance > 0 ? `T&M owe C&D ${formatGBP(balance)}` : `C&D owe T&M ${formatGBP(-balance)}`;
 
-  let balanceText = 'All settled — even split';
-  if (balance > 0.01) {
-    if (tmNet > 0) balanceText = `Caroline & David owe Tim & Michelle ${formatGBP(balance)}`;
-    else balanceText = `Tim & Michelle owe Caroline & David ${formatGBP(balance)}`;
-  }
+  const sorted = [...(data.expenses || [])].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
   return (
     <div className="fade-in">
-      <SectionHeader title="Expenses" onAdd={() => setAdding(true)} />
-      <div className="sans text-xs mt-1" style={{ color: 'var(--sumi-soft)' }}>Per-couple split. Live FX to GBP. Net balance only.</div>
-
-      {/* Balance card */}
-      <div className="bg-white rounded-2xl p-5 card-shadow mt-4 text-center">
-        <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--vermillion)' }}>Net balance</div>
-        <div className="text-xl font-bold mt-2" style={{ color: 'var(--indigo)' }}>{balanceText}</div>
-        <div className="divider my-3" />
-        <div className="grid grid-cols-2 gap-3 sans text-xs" style={{ color: 'var(--sumi)' }}>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sumi-soft)' }}>T&M paid</div>
-            <div className="font-bold text-sm">{formatGBP(tmPaid)}</div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sumi-soft)' }}>C&D paid</div>
-            <div className="font-bold text-sm">{formatGBP(cdPaid)}</div>
-          </div>
+      <div className="bg-white rounded-xl p-4 card-shadow mb-4">
+        <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>Group balance</div>
+        <div className="text-lg font-bold mt-1" style={{ color: 'var(--primary)' }}>{balanceText}</div>
+        <div className="grid grid-cols-2 gap-3 mt-3 sans text-xs">
+          <div><div className="text-[10px] uppercase" style={{ color: 'var(--text-soft)' }}>T&M paid (group)</div><div className="font-bold mt-0.5" style={{ color: 'var(--primary)' }}>{formatGBP(tmPaid)}</div></div>
+          <div><div className="text-[10px] uppercase" style={{ color: 'var(--text-soft)' }}>C&D paid (group)</div><div className="font-bold mt-0.5" style={{ color: 'var(--primary)' }}>{formatGBP(cdPaid)}</div></div>
         </div>
-        <div className="sans text-[10px] mt-3" style={{ color: 'var(--sumi-soft)' }}>Total trip spend: {formatGBP(totalSpent)}</div>
       </div>
 
-      {/* Log */}
-      <div className="mt-6">
-        <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-2" style={{ color: 'var(--vermillion)' }}>Log</h3>
-        {expenses.length === 0 ? (
-          <div className="bg-white rounded-xl p-4 card-shadow text-center sans text-sm" style={{ color: 'var(--sumi-soft)' }}>No expenses logged yet. Tap "Add" to log a payment.</div>
-        ) : (
-          <div className="space-y-2">
-            {[...expenses].reverse().map(e => (
-              <div key={e.id} className="bg-white rounded-xl p-3 card-shadow flex items-center gap-3">
-                <div className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(192, 48, 40, 0.1)' }}>
-                  <Coins size={14} style={{ color: 'var(--vermillion)' }} />
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Expenses ({(data.expenses || []).length})</h2>
+        <button onClick={() => setEditing({ id: uid(), date: TODAY(), description: '', amount: 0, currency: 'JPY', payer: 'TM', split: 'group', category: '' })} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
+      </div>
+
+      <div className="space-y-2">
+        {sorted.length === 0 && <div className="sans text-xs text-center py-6 italic" style={{ color: 'var(--text-soft)' }}>No expenses yet.</div>}
+        {sorted.map(e => {
+          const gbp = rates ? toGBP(e.amount, e.currency, rates) : null;
+          return (
+            <div key={e.id} className="bg-white rounded-xl p-3 card-shadow flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{e.description}</span>
+                  <span className="chip" style={{ background: 'rgba(30, 42, 74, 0.08)', color: 'var(--primary)' }}>{e.payer === 'TM' ? 'T&M' : 'C&D'}</span>
+                  {e.split === 'own' && <span className="chip" style={{ background: 'rgba(184, 146, 61, 0.15)', color: 'var(--gold)' }}>Own</span>}
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-sm" style={{ color: 'var(--indigo)' }}>{e.description}</div>
-                  <div className="sans text-[11px] flex items-center gap-2" style={{ color: 'var(--sumi-soft)' }}>
-                    <span>{e.payer === 'TM' ? 'Tim & Michelle paid' : 'Caroline & David paid'}</span>
-                    <span>·</span>
-                    <span>{fmtDate(e.date)}</span>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="font-bold text-sm" style={{ color: 'var(--indigo)' }}>{formatCurrency(e.amount, e.currency)}</div>
-                  {e.currency !== 'GBP' && <div className="sans text-[10px]" style={{ color: 'var(--sumi-soft)' }}>≈ {formatGBP(e.gbp)}</div>}
-                </div>
-                <button onClick={() => remove(e.id)} style={{ color: 'var(--sumi-soft)' }}><X size={14} /></button>
+                <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{fmtDate(e.date)}{e.category && ` · ${e.category}`}</div>
               </div>
-            ))}
-          </div>
-        )}
+              <div className="text-right">
+                <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{formatCurrency(e.amount, e.currency)}</div>
+                {gbp != null && e.currency !== 'GBP' && <div className="sans text-[10px]" style={{ color: 'var(--text-soft)' }}>≈ {formatGBP(gbp)}</div>}
+              </div>
+              <div className="flex flex-col gap-1">
+                <button onClick={() => setEditing(e)} style={{ color: 'var(--accent)' }}><Edit3 size={13} /></button>
+                <button onClick={() => remove(e.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={13} /></button>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      {adding && <ExpenseEditor rates={rates} onSave={addExpense} onClose={() => setAdding(false)} />}
+      {editing && <ExpenseEditor expense={editing} onSave={save} onClose={() => setEditing(null)} />}
     </div>
   );
 }
 
-function ExpenseEditor({ rates, onSave, onClose }) {
-  const [exp, setExp] = useState({ payer: 'TM', amount: '', currency: 'JPY', description: '', date: new Date().toISOString().slice(0, 10) });
-  const set = (k, v) => setExp({ ...exp, [k]: v });
-  const submit = () => {
-    if (!exp.amount || !exp.description.trim()) { alert('Fill amount and description'); return; }
-    onSave({ ...exp, amount: parseFloat(exp.amount) });
-  };
-  const previewGBP = exp.amount && rates ? formatGBP(toGBP(parseFloat(exp.amount) || 0, exp.currency, rates)) : '';
+function ExpenseEditor({ expense, onSave, onClose }) {
+  const [e, setE] = useState(expense);
+  const set = (k, v) => setE({ ...e, [k]: v });
   return (
-    <Modal onClose={onClose} title="Log payment">
-      <Field label="Who paid?">
-        <div className="grid grid-cols-2 gap-2">
-          <button onClick={() => set('payer', 'TM')} className={`sans p-2 rounded-lg text-sm font-bold ${exp.payer === 'TM' ? 'btn-primary' : ''}`} style={exp.payer !== 'TM' ? { background: 'rgba(30, 42, 74, 0.06)', color: 'var(--sumi)' } : {}}>Tim & Michelle</button>
-          <button onClick={() => set('payer', 'CD')} className={`sans p-2 rounded-lg text-sm font-bold ${exp.payer === 'CD' ? 'btn-primary' : ''}`} style={exp.payer !== 'CD' ? { background: 'rgba(30, 42, 74, 0.06)', color: 'var(--sumi)' } : {}}>Caroline & David</button>
-        </div>
-      </Field>
-      <Field label="What was it for?">
-        <TextInput value={exp.description} onChange={v => set('description', v)} placeholder="e.g. Dinner at Dotonbori" />
-      </Field>
+    <Modal onClose={onClose} title={expense.description ? 'Edit expense' : 'New expense'}>
+      <Field label="Date"><input type="date" value={e.date} onChange={ev => set('date', ev.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+      <Field label="Description"><TextInput value={e.description} onChange={v => set('description', v)} /></Field>
       <div className="grid grid-cols-3 gap-2">
+        <div className="col-span-2">
+          <Field label="Amount"><input type="number" step="0.01" value={e.amount} onChange={ev => set('amount', parseFloat(ev.target.value) || 0)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+        </div>
         <Field label="Currency">
-          <select value={exp.currency} onChange={e => set('currency', e.target.value)} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }}>
-            <option value="GBP">£ GBP</option>
-            <option value="JPY">¥ JPY</option>
-            <option value="KRW">₩ KRW</option>
+          <select value={e.currency} onChange={ev => set('currency', ev.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+            <option value="JPY">JPY</option><option value="KRW">KRW</option><option value="GBP">GBP</option><option value="USD">USD</option>
           </select>
         </Field>
-        <div className="col-span-2">
-          <Field label="Amount">
-            <input type="number" value={exp.amount} onChange={e => set('amount', e.target.value)} placeholder="0" className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }} />
-          </Field>
-        </div>
       </div>
-      {previewGBP && exp.currency !== 'GBP' && (
-        <div className="sans text-xs italic mb-3" style={{ color: 'var(--sumi-soft)' }}>≈ {previewGBP} (live rate)</div>
-      )}
-      <Field label="Date"><input type="date" value={exp.date} onChange={e => set('date', e.target.value)} className="sans w-full p-2 rounded border" style={{ borderColor: 'rgba(30, 42, 74, 0.2)' }} /></Field>
-      <EditorButtons onSave={submit} onClose={onClose} />
+      <Field label="Paid by">
+        <select value={e.payer} onChange={ev => set('payer', ev.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="TM">Tim & Michelle</option>
+          <option value="CD">Caroline & David</option>
+        </select>
+      </Field>
+      <Field label="Split">
+        <select value={e.split} onChange={ev => set('split', ev.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="group">Group (split 50/50)</option>
+          <option value="own">Own only (no split)</option>
+        </select>
+      </Field>
+      <Field label="Category"><TextInput value={e.category} onChange={v => set('category', v)} placeholder="Food, Transport, Tickets, etc" /></Field>
+      <EditorButtons onSave={() => onSave(e)} onClose={onClose} />
     </Modal>
   );
 }
@@ -1564,276 +1820,492 @@ function ExpenseEditor({ rates, onSave, onClose }) {
 /* ========================= DOCS ========================= */
 function DocsTab({ data, onSave }) {
   const [editing, setEditing] = useState(null);
-  const [adding, setAdding] = useState(false);
   const save = (d) => {
-    const exists = data.documents.find(x => x.id === d.id);
-    onSave({ ...data, documents: exists ? data.documents.map(x => x.id === d.id ? d : x) : [...data.documents, d] });
-    setEditing(null); setAdding(false);
+    const docs = (data.documents || []).find(x => x.id === d.id) ? data.documents.map(x => x.id === d.id ? d : x) : [...(data.documents || []), d];
+    onSave({ ...data, documents: docs });
+    setEditing(null);
   };
-  const del = (id) => { if (confirm('Delete?')) onSave({ ...data, documents: data.documents.filter(d => d.id !== id) }); };
+  const remove = (id) => {
+    if (!confirm('Delete?')) return;
+    onSave({ ...data, documents: data.documents.filter(d => d.id !== id) });
+  };
+  const handleUpload = async (doc, e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const u = await uploadFile(file, 'docs');
+      save({ ...doc, files: [...(doc.files || []), u] });
+    } catch (err) { alert('Upload failed: ' + err.message); }
+  };
+  const removeFile = async (doc, file) => {
+    if (!confirm('Remove file?')) return;
+    try { await deleteFile(file.path); } catch {}
+    save({ ...doc, files: doc.files.filter(f => f.path !== file.path) });
+  };
+
   return (
     <div className="fade-in">
-      <SectionHeader title="Documents" onAdd={() => setAdding(true)} />
-      <div className="space-y-3 mt-3">
-        {data.documents.map(d => (
-          <div key={d.id} className="bg-white rounded-xl p-4 card-shadow flex items-start gap-3">
-            <div className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(192, 48, 40, 0.1)' }}>
-              <FileText size={16} style={{ color: 'var(--vermillion)' }} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="font-bold" style={{ color: 'var(--indigo)' }}>{d.title}</div>
-              <div className="sans text-xs" style={{ color: 'var(--sumi)' }}>{d.detail}</div>
-              {d.ref && d.ref !== '-' && <div className="sans text-[11px] font-mono mt-1" style={{ color: 'var(--sumi-soft)' }}>{d.ref}</div>}
-              {d.files && d.files.length > 0 && <FileList files={d.files} />}
-              <div className="flex gap-3 mt-2">
-                <button onClick={() => setEditing(d)} className="sans text-[11px] font-semibold" style={{ color: 'var(--vermillion)' }}>Edit</button>
-                <button onClick={() => del(d.id)} className="sans text-[11px] font-semibold" style={{ color: 'var(--sumi-soft)' }}>Delete</button>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Documents</h2>
+        <button onClick={() => setEditing({ id: uid(), title: '', detail: '', ref: '', files: [] })} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
+      </div>
+      <div className="space-y-2">
+        {(data.documents || []).map(d => (
+          <div key={d.id} className="bg-white rounded-xl p-3 card-shadow">
+            <div className="flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{d.title}</div>
+                <div className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{d.detail}</div>
+                {d.ref && d.ref !== 'TBD' && <div className="sans text-xs mt-1">Ref: <strong style={{ color: 'var(--primary)' }}>{d.ref}</strong></div>}
+                <FileList files={d.files} onRemove={(f) => removeFile(d, f)} />
               </div>
+              <label className="cursor-pointer p-2" style={{ color: 'var(--accent)' }}>
+                <Upload size={14} />
+                <input type="file" className="hidden" onChange={(e) => handleUpload(d, e)} />
+              </label>
+              <button onClick={() => setEditing(d)} style={{ color: 'var(--accent)' }}><Edit3 size={13} /></button>
+              <button onClick={() => remove(d.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={13} /></button>
             </div>
           </div>
         ))}
       </div>
-      {(editing || adding) && (
-        <Modal onClose={() => { setEditing(null); setAdding(false); }} title={editing ? 'Edit document' : 'New document'}>
-          <DocForm initial={editing || { id: uid(), title: '', detail: '', ref: '', files: [] }} onSave={save} onClose={() => { setEditing(null); setAdding(false); }} />
-        </Modal>
-      )}
+      {editing && <DocForm doc={editing} onSave={save} onClose={() => setEditing(null)} />}
     </div>
   );
 }
 
-function DocForm({ initial, onSave, onClose }) {
-  const [d, setD] = useState(initial);
-  const [uploading, setUploading] = useState(false);
-  const handleUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try { const u = await uploadFile(file, 'docs'); setD({ ...d, files: [...(d.files || []), u] }); } catch (err) { alert('Upload failed: ' + err.message); }
-    setUploading(false);
-  };
-  const removeFile = async (file) => {
-    if (!confirm(`Remove ${file.name}?`)) return;
-    try { await deleteFile(file.path); } catch (e) {}
-    setD({ ...d, files: (d.files || []).filter(x => x.path !== file.path) });
-  };
-  return (<>
-    <Field label="Title"><TextInput value={d.title} onChange={v => setD({ ...d, title: v })} /></Field>
-    <Field label="Detail"><TextInput value={d.detail} onChange={v => setD({ ...d, detail: v })} /></Field>
-    <Field label="Reference"><TextInput value={d.ref} onChange={v => setD({ ...d, ref: v })} /></Field>
-    <Field label="Attachments"><FileUploader files={d.files || []} onUpload={handleUpload} onRemove={removeFile} uploading={uploading} /></Field>
-    <EditorButtons onSave={() => onSave(d)} onClose={onClose} />
-  </>);
+function DocForm({ doc, onSave, onClose }) {
+  const [d, setD] = useState(doc);
+  const set = (k, v) => setD({ ...d, [k]: v });
+  return (
+    <Modal onClose={onClose} title={doc.title ? 'Edit document' : 'New document'}>
+      <Field label="Title"><TextInput value={d.title} onChange={v => set('title', v)} /></Field>
+      <Field label="Detail"><TextInput value={d.detail} onChange={v => set('detail', v)} /></Field>
+      <Field label="Reference"><TextInput value={d.ref} onChange={v => set('ref', v)} /></Field>
+      <EditorButtons onSave={() => onSave(d)} onClose={onClose} />
+    </Modal>
+  );
 }
 
 /* ========================= CONTACTS ========================= */
 function ContactsTab({ data, onSave }) {
   const [editing, setEditing] = useState(null);
-  const [adding, setAdding] = useState(false);
   const save = (c) => {
-    const exists = data.contacts.find(x => x.id === c.id);
-    onSave({ ...data, contacts: exists ? data.contacts.map(x => x.id === c.id ? c : x) : [...data.contacts, c] });
-    setEditing(null); setAdding(false);
+    const contacts = (data.contacts || []).find(x => x.id === c.id) ? data.contacts.map(x => x.id === c.id ? c : x) : [...(data.contacts || []), c];
+    onSave({ ...data, contacts });
+    setEditing(null);
   };
-  const del = (id) => { if (confirm('Delete?')) onSave({ ...data, contacts: data.contacts.filter(c => c.id !== id) }); };
+  const remove = (id) => {
+    if (!confirm('Delete?')) return;
+    onSave({ ...data, contacts: data.contacts.filter(c => c.id !== id) });
+  };
   return (
     <div className="fade-in">
-      <SectionHeader title="Contacts" onAdd={() => setAdding(true)} />
-      <div className="space-y-2 mt-3">
-        {data.contacts.map(c => (
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Contacts</h2>
+        <button onClick={() => setEditing({ id: uid(), name: '', phone: '' })} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
+      </div>
+      <div className="space-y-2">
+        {(data.contacts || []).map(c => (
           <div key={c.id} className="bg-white rounded-xl p-3 card-shadow flex items-center gap-3">
-            <div className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(192, 48, 40, 0.1)' }}>
-              <Phone size={14} style={{ color: 'var(--vermillion)' }} />
+            <Phone size={16} style={{ color: 'var(--accent)' }} />
+            <div className="flex-1">
+              <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{c.name}</div>
+              <a href={`tel:${c.phone}`} className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{c.phone}</a>
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="font-bold text-sm" style={{ color: 'var(--indigo)' }}>{c.name}</div>
-              <a href={`tel:${c.phone}`} className="sans text-xs" style={{ color: 'var(--vermillion)' }}>{c.phone}</a>
-            </div>
-            <div className="flex flex-col gap-1">
-              <button onClick={() => setEditing(c)} className="sans text-[11px] font-semibold" style={{ color: 'var(--vermillion)' }}>Edit</button>
-              <button onClick={() => del(c.id)} className="sans text-[11px] font-semibold" style={{ color: 'var(--sumi-soft)' }}>Delete</button>
-            </div>
+            <button onClick={() => setEditing(c)} style={{ color: 'var(--accent)' }}><Edit3 size={13} /></button>
+            <button onClick={() => remove(c.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={13} /></button>
           </div>
         ))}
       </div>
-      {(editing || adding) && (
-        <Modal onClose={() => { setEditing(null); setAdding(false); }} title={editing ? 'Edit contact' : 'New contact'}>
-          <ContactForm initial={editing || { id: uid(), name: '', phone: '' }} onSave={save} onClose={() => { setEditing(null); setAdding(false); }} />
-        </Modal>
-      )}
+      {editing && <ContactForm contact={editing} onSave={save} onClose={() => setEditing(null)} />}
     </div>
   );
 }
 
-function ContactForm({ initial, onSave, onClose }) {
-  const [c, setC] = useState(initial);
-  return (<>
-    <Field label="Name"><TextInput value={c.name} onChange={v => setC({ ...c, name: v })} /></Field>
-    <Field label="Phone"><TextInput value={c.phone} onChange={v => setC({ ...c, phone: v })} /></Field>
-    <EditorButtons onSave={() => onSave(c)} onClose={onClose} />
-  </>);
+function ContactForm({ contact, onSave, onClose }) {
+  const [c, setC] = useState(contact);
+  return (
+    <Modal onClose={onClose} title={contact.name ? 'Edit contact' : 'New contact'}>
+      <Field label="Name"><TextInput value={c.name} onChange={v => setC({ ...c, name: v })} /></Field>
+      <Field label="Phone"><TextInput value={c.phone} onChange={v => setC({ ...c, phone: v })} /></Field>
+      <EditorButtons onSave={() => onSave(c)} onClose={onClose} />
+    </Modal>
+  );
 }
 
-/* ========================= PACKING (NEW DUAL CHECKBOX) ========================= */
+/* ========================= PACKING (rewrite — couple tabs + bag sections) ========================= */
 function PackingTab({ data, onSave }) {
-  const [filter, setFilter] = useState('all'); // all | need | got_unpacked | full
-  const [newItem, setNewItem] = useState('');
+  const [activeCouple, setActiveCouple] = useState('TM'); // TM | CD
+  const [filter, setFilter] = useState('all'); // all | need | got | full
+  const [collapsed, setCollapsed] = useState({}); // bagId -> bool
+  const [searchQuery, setSearchQuery] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [newText, setNewText] = useState('');
+  const [newBagId, setNewBagId] = useState('');
 
-  const items = data.packing || [];
+  const list = activeCouple === 'TM' ? (data.packing || []) : (data.packingCD || []);
+  const bags = (data.bags || []).filter(b => b.owner === activeCouple);
+  const fieldName = activeCouple === 'TM' ? 'packing' : 'packingCD';
 
-  const filtered = items.filter(p => {
-    if (filter === 'need') return !p.gotIt;
-    if (filter === 'got_unpacked') return p.gotIt && !p.packed;
-    if (filter === 'full') return p.gotIt && p.packed;
-    return true;
-  });
+  // Default new bag selection + reset search when switching couple
+  useEffect(() => {
+    if (bags.length > 0 && !bags.find(b => b.id === newBagId)) {
+      setNewBagId(bags[0].id);
+    }
+    setSearchQuery('');
+  }, [activeCouple, bags.length]);
 
-  const toggleGot = (id) => onSave({ ...data, packing: items.map(p => p.id === id ? { ...p, gotIt: !p.gotIt, packed: !p.gotIt ? p.packed : false } : p) });
-  const togglePack = (id) => onSave({ ...data, packing: items.map(p => p.id === id ? { ...p, packed: p.gotIt ? !p.packed : false } : p) });
-  const del = (id) => onSave({ ...data, packing: items.filter(p => p.id !== id) });
-  const add = () => {
-    if (!newItem.trim()) return;
-    onSave({ ...data, packing: [...items, { id: uid(), text: newItem.trim(), gotIt: false, packed: false }] });
-    setNewItem('');
+  const updateList = (newList) => onSave({ ...data, [fieldName]: newList });
+
+  const toggleGot = (id) => updateList(list.map(p => p.id === id ? { ...p, gotIt: !p.gotIt, packed: !p.gotIt ? p.packed : false } : p));
+  const togglePacked = (id) => updateList(list.map(p => p.id === id ? { ...p, packed: !p.packed } : p));
+  const remove = (id) => updateList(list.filter(p => p.id !== id));
+  const moveBag = (id, bagId) => updateList(list.map(p => p.id === id ? { ...p, bagId } : p));
+  const addItem = () => {
+    if (!newText.trim() || !newBagId) return;
+    updateList([...list, { id: uid(), text: newText.trim(), gotIt: false, packed: false, owner: activeCouple, bagId: newBagId }]);
+    setNewText(''); setAdding(false);
   };
+
+  const totals = {
+    all: list.length,
+    need: list.filter(p => !p.gotIt).length,
+    got: list.filter(p => p.gotIt && !p.packed).length,
+    full: list.filter(p => p.gotIt && p.packed).length,
+  };
+
+  const filtered = useMemo(() => {
+    let result = list;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(p => p.text.toLowerCase().includes(q));
+    }
+    if (filter === 'need') return result.filter(p => !p.gotIt);
+    if (filter === 'got') return result.filter(p => p.gotIt && !p.packed);
+    if (filter === 'full') return result.filter(p => p.gotIt && p.packed);
+    return result;
+  }, [list, filter, searchQuery]);
 
   return (
     <div className="fade-in">
-      <h2 className="text-2xl font-bold" style={{ color: 'var(--indigo)' }}>Packing</h2>
+      {/* Couple tabs */}
+      <div className="flex gap-2 mb-4">
+        <button onClick={() => setActiveCouple('TM')} className={`couple-tab ${activeCouple === 'TM' ? 'active' : ''}`}>Tim & Michelle</button>
+        <button onClick={() => setActiveCouple('CD')} className={`couple-tab ${activeCouple === 'CD' ? 'active' : ''}`}>Caroline & David</button>
+      </div>
 
-      <div className="flex flex-wrap gap-2 mt-3 mb-4">
+      {/* Search bar */}
+      <div className="relative mb-3">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-soft)' }} />
+        <input
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          placeholder="Search packing list…"
+          className="sans w-full pl-8 pr-8 py-2 rounded-xl border text-sm"
+          style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }}
+        />
+        {searchQuery && (
+          <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-soft)' }}>
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      {/* Stats + filter */}
+      <div className="bg-white rounded-xl p-3 card-shadow mb-3">
+        <div className="grid grid-cols-4 gap-2 text-center sans">
+          <div><div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-soft)' }}>Total</div><div className="text-lg font-bold mt-0.5" style={{ color: 'var(--primary)' }}>{totals.all}</div></div>
+          <div><div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-soft)' }}>To get</div><div className="text-lg font-bold mt-0.5" style={{ color: 'var(--accent)' }}>{totals.need}</div></div>
+          <div><div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-soft)' }}>Got</div><div className="text-lg font-bold mt-0.5" style={{ color: 'var(--gold)' }}>{totals.got}</div></div>
+          <div><div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-soft)' }}>Packed</div><div className="text-lg font-bold mt-0.5" style={{ color: '#2d8659' }}>{totals.full}</div></div>
+        </div>
+      </div>
+
+      <div className="flex gap-2 mb-3">
         {[
           { id: 'all', label: 'All' },
-          { id: 'need', label: 'Need to get' },
-          { id: 'got_unpacked', label: 'Got, not packed' },
-          { id: 'full', label: 'Fully packed' },
+          { id: 'need', label: 'To get' },
+          { id: 'got', label: 'Got' },
+          { id: 'full', label: 'Packed' },
         ].map(f => (
           <button key={f.id} onClick={() => setFilter(f.id)} className={`filter-pill sans ${filter === f.id ? 'active' : ''}`}>{f.label}</button>
         ))}
       </div>
 
-      <div className="sans text-xs mb-3" style={{ color: 'var(--sumi-soft)' }}>
-        {filtered.length} item{filtered.length === 1 ? '' : 's'} shown
-      </div>
-
-      {/* Legend */}
-      <div className="flex items-center gap-3 mb-3 sans text-[10px]" style={{ color: 'var(--sumi-soft)' }}>
-        <div className="flex items-center gap-1"><div className="w-3 h-3 rounded-full border-2" style={{ borderColor: 'var(--indigo)' }} /> Got it</div>
-        <div className="flex items-center gap-1"><div className="w-3 h-3 rounded-full border-2" style={{ borderColor: '#2d8659' }} /> Packed</div>
-      </div>
+      {/* Bag sections */}
+      {bags.length === 0 && (
+        <div className="bg-white rounded-xl p-6 card-shadow text-center sans" style={{ color: 'var(--text-soft)' }}>
+          No bags for {activeCouple === 'TM' ? 'Tim & Michelle' : 'Caroline & David'} yet. Add bags in <strong>Settings</strong> (cog icon, top of screen).
+        </div>
+      )}
 
       <div className="space-y-2">
-        {filtered.map(p => (
-          <div key={p.id} className="bg-white rounded-xl p-3 card-shadow flex items-center gap-3">
-            <div className="dual-check">
-              <button onClick={() => toggleGot(p.id)} className={`check-got ${p.gotIt ? 'on' : ''}`} aria-label="Got it">
-                {p.gotIt && <CheckCircle2 size={11} />}
+        {bags.map(bag => {
+          const bagItems = filtered.filter(p => p.bagId === bag.id);
+          const allBagItems = list.filter(p => p.bagId === bag.id);
+          const packedCount = allBagItems.filter(p => p.packed).length;
+          // Auto-expand if there's an active search and this bag has matches
+          const hasSearchMatch = searchQuery.trim() && bagItems.length > 0;
+          const isCollapsed = hasSearchMatch ? false : collapsed[bag.id];
+          return (
+            <div key={bag.id} className="bag-section">
+              <button onClick={() => setCollapsed({ ...collapsed, [bag.id]: !isCollapsed })} className="bag-section-header">
+                <span className="text-2xl">{bag.icon}</span>
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="sans font-bold" style={{ color: 'var(--primary)' }}>{bag.name}</div>
+                  <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>{packedCount} of {allBagItems.length} packed{filter !== 'all' && ` · showing ${bagItems.length} in this filter`}</div>
+                </div>
+                {isCollapsed ? <ChevronDown size={18} style={{ color: 'var(--text-soft)' }} /> : <ChevronUp size={18} style={{ color: 'var(--text-soft)' }} />}
               </button>
-              <button onClick={() => togglePack(p.id)} disabled={!p.gotIt} className={`check-pack ${p.packed ? 'on' : ''}`} aria-label="Packed">
-                {p.packed && <CheckCircle2 size={11} />}
-              </button>
+              {!isCollapsed && (
+                <div className="bag-section-body">
+                  {bagItems.length === 0 ? (
+                    <div className="sans text-xs italic py-2" style={{ color: 'var(--text-soft)' }}>No items in this bag {filter !== 'all' && 'matching filter'}.</div>
+                  ) : (
+                    <div className="space-y-1">
+                      {bagItems.map(p => (
+                        <div key={p.id} className="flex items-center gap-2 py-1">
+                          <div className="dual-check">
+                            <button onClick={() => toggleGot(p.id)} className={`check-got ${p.gotIt ? 'on' : ''}`} aria-label="Got it">
+                              {p.gotIt && <CheckCircle2 size={12} />}
+                            </button>
+                            <button onClick={() => togglePacked(p.id)} disabled={!p.gotIt} className={`check-pack ${p.packed ? 'on' : ''}`} aria-label="Packed">
+                              {p.packed && <CheckCircle2 size={12} />}
+                            </button>
+                          </div>
+                          <span className="flex-1 sans text-sm" style={{ color: 'var(--text)', textDecoration: p.packed ? 'line-through' : 'none', opacity: p.packed ? 0.5 : 1 }}>{p.text}</span>
+                          <select value={p.bagId} onChange={e => moveBag(p.id, e.target.value)} className="sans text-[10px] p-1 rounded border" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text-soft)' }}>
+                            {bags.map(b => <option key={b.id} value={b.id}>{b.icon} {b.name}</option>)}
+                          </select>
+                          <button onClick={() => remove(p.id)} style={{ color: 'var(--text-soft)' }}><X size={13} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-            <span className="flex-1 sans text-sm" style={{ color: 'var(--sumi)', textDecoration: p.packed ? 'line-through' : 'none', opacity: p.packed ? 0.5 : 1 }}>{p.text}</span>
-            <button onClick={() => del(p.id)} style={{ color: 'var(--sumi-soft)' }}><X size={14} /></button>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      <div className="flex gap-2 mt-4">
-        <input value={newItem} onChange={e => setNewItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} placeholder="Add item…" className="sans flex-1 p-3 rounded-xl border text-sm" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} />
-        <button onClick={add} className="btn-primary sans px-4 rounded-xl font-bold"><Plus size={16} /></button>
-      </div>
+      {/* Add */}
+      {bags.length > 0 && (
+        <div className="mt-4 p-3 rounded-xl" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2" style={{ color: 'var(--accent)' }}>Add item</div>
+          <div className="space-y-2">
+            <input value={newText} onChange={e => setNewText(e.target.value)} onKeyDown={e => e.key === 'Enter' && addItem()} placeholder="What to pack…" className="sans w-full p-2 rounded-lg border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+            <div className="flex gap-2">
+              <select value={newBagId} onChange={e => setNewBagId(e.target.value)} className="sans flex-1 p-2 rounded-lg border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+                {bags.map(b => <option key={b.id} value={b.id}>{b.icon} {b.name}</option>)}
+              </select>
+              <button onClick={addItem} className="btn-primary sans px-4 rounded-lg text-sm font-bold flex items-center gap-1"><Plus size={14} /> Add</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/* ========================= NOTES ========================= */
+/* ========================= NOTES (per-person tabs) ========================= */
 function NotesTab({ data, onSave }) {
-  const [value, setValue] = useState(data.notes || '');
+  const [active, setActive] = useState('shared');
+  const [text, setText] = useState(data.notes[active] || '');
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => { setText(data.notes[active] || ''); setSaved(false); }, [active]);
+
   const save = () => {
-    onSave({ ...data, notes: value });
+    onSave({ ...data, notes: { ...data.notes, [active]: text } });
     setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+    setTimeout(() => setSaved(false), 2000);
   };
+
+  const tabs = [
+    { id: 'shared', label: 'Shared' },
+    { id: 'tim', label: 'Tim' },
+    { id: 'michelle', label: 'Michelle' },
+    { id: 'caroline', label: 'Caroline' },
+    { id: 'david', label: 'David' },
+  ];
+
   return (
     <div className="fade-in">
-      <h2 className="text-2xl font-bold mb-4" style={{ color: 'var(--indigo)' }}>Notes</h2>
-      <textarea value={value} onChange={e => setValue(e.target.value)} rows={22} className="sans w-full p-4 rounded-xl border text-sm leading-relaxed" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)', color: 'var(--sumi)' }} placeholder="Tips, phrases, reminders…" />
-      <button onClick={save} className="btn-primary sans px-5 py-2 rounded-xl font-bold mt-3 flex items-center gap-2">
-        <Save size={14} /> {saved ? 'Saved' : 'Save'}
-      </button>
+      <div className="flex gap-1 mb-4 overflow-x-auto hide-scroll">
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setActive(t.id)} className={`flex-shrink-0 sans px-3 py-1.5 text-xs font-bold rounded-full ${active === t.id ? '' : ''}`} style={
+            active === t.id
+              ? { background: 'var(--primary)', color: 'var(--bg)' }
+              : { background: 'rgba(30, 42, 74, 0.06)', color: 'var(--text-soft)' }
+          }>{t.label}</button>
+        ))}
+      </div>
+
+      <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2 flex items-center gap-2" style={{ color: 'var(--accent)' }}>
+        {active === 'shared' ? <><Heart size={12} /> Shared notes (everyone sees)</> : <><User size={12} /> {tabs.find(t => t.id === active)?.label}'s private scratchpad</>}
+      </div>
+      <textarea
+        value={text}
+        onChange={e => setText(e.target.value)}
+        rows={20}
+        placeholder={active === 'shared' ? 'Trip-wide notes anyone in the group can see…' : 'Personal notes only you care about…'}
+        className="sans w-full p-4 rounded-xl border text-sm leading-relaxed"
+        style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)', minHeight: '400px' }}
+      />
+      <div className="flex items-center gap-2 mt-3">
+        <button onClick={save} className="btn-primary sans px-5 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
+          <Save size={14} /> Save
+        </button>
+        {saved && <span className="sans text-xs" style={{ color: 'var(--accent)' }}>Saved!</span>}
+      </div>
     </div>
   );
 }
 
 /* ========================= GUIDE ========================= */
 function GuideTab({ data, setTab, setActiveDay }) {
-  // Determine which features are "in use"
+  // detect unused features
   const usage = {
-    days: data.days.length > 0,
-    travel: data.flights.length > 0 || data.accommodation.length > 0,
-    bookings: (data.bookings || []).length > 0,
-    expenses: (data.expenses || []).length > 0,
-    docs: data.documents.length > 0,
-    contacts: data.contacts.length > 0,
-    packing: (data.packing || []).length > 0,
-    notes: !!data.notes && data.notes.length > 0,
     pinned: data.days.some(d => (d.pinned || []).length > 0),
     wishes: data.days.some(d => (d.wishes || []).length > 0),
     ideas: data.days.some(d => (d.ideas || []).length > 0),
-    rating: data.days.some(d => d.rating > 0),
-    diary: data.days.some(d => d.diary && d.diary.length > 0),
-    dayBag: data.days.some(d => Object.keys(d.dayBagDone || {}).length > 0),
-    places: data.days.some(d => d.items.some(i => (i.places || []).length > 0)),
-    files: [...(data.bookings || []), ...data.flights, ...data.accommodation, ...data.documents]
-      .some(x => (x.files || []).length > 0),
+    rating: data.days.some(d => (d.rating || 0) > 0),
+    diary: data.days.some(d => (d.diary || '').trim().length > 0),
+    expenses: (data.expenses || []).length > 0,
+    files: data.days.some(d => d.items.some(i => (i.files || []).length > 0)) || (data.documents || []).some(d => (d.files || []).length > 0),
+    largeText: typeof window !== 'undefined' && document.documentElement.dataset.largeText === 'on',
+    theme: data.theme && data.theme !== 'auto',
+    bags: (data.bags || []).length > 0,
+    predep: ((data.predepTasks?.tim || []).length + (data.predepTasks?.michelle || []).length) > 0,
   };
 
-  const features = [
-    { id: 'days', name: '📅 Days tab', desc: 'Browse all 15 days. Filter by upcoming/past. Tap any day for detail.', tab: 'days', used: usage.days },
-    { id: 'travel', name: '✈️ Travel', desc: 'Flights and hotels. Check status, manage bookings, attach PDFs.', tab: 'travel', used: usage.travel },
-    { id: 'bookings', name: '📋 Bookings checklist', desc: 'Things to book with deadlines. Tick off when done. Link to days.', tab: 'bookings', used: usage.bookings },
-    { id: 'expenses', name: '💸 Expenses', desc: 'Per-couple expense splitter. Live FX. Net balance only.', tab: 'expenses', used: usage.expenses },
-    { id: 'docs', name: '📄 Documents', desc: 'Passports, insurance, IDP. Attach scans.', tab: 'docs', used: usage.docs },
-    { id: 'contacts', name: '☎️ Contacts', desc: 'Quick-dial hotel desks, embassies, emergency numbers.', tab: 'contacts', used: usage.contacts },
-    { id: 'packing', name: '🧳 Packing', desc: 'Got it / Packed dual checklist. Filter by status.', tab: 'packing', used: usage.packing },
-    { id: 'notes', name: '📝 Notes', desc: 'Etiquette, phrases, toddler food picks.', tab: 'notes', used: usage.notes },
-    { id: 'pinned', name: '📌 Pin items', desc: 'Pin the most important thing each day to the top.', used: usage.pinned, hint: 'Tap an item, then "Pin"' },
-    { id: 'wishes', name: '💛 Wishes per day', desc: '"I would like to…" wishes per traveller, optional name attribution.', used: usage.wishes, hint: 'On any day, find Wishes section' },
-    { id: 'ideas', name: '💡 Ideas → Plan', desc: 'Add ideas anyone can throw in. Tap "Plan" to promote to schedule.', used: usage.ideas, hint: 'On any day, find Ideas section' },
-    { id: 'rating', name: '⭐ Day rating', desc: 'Rate each day 1-5 stars at the end.', used: usage.rating, hint: 'At the bottom of any day' },
-    { id: 'diary', name: '📔 Day diary', desc: 'One line about each day — mini trip diary.', used: usage.diary, hint: 'At the bottom of any day' },
-    { id: 'dayBag', name: '🎒 Day bag', desc: 'Daily essentials checklist (Aiden snacks, sun cream, etc.)', used: usage.dayBag, hint: 'On any day, expand Day bag section' },
-    { id: 'places', name: '📍 Sub-places', desc: 'Add multiple places under one activity (e.g. shops in Ginza).', used: usage.places, hint: 'On any item, tap "Place"' },
-    { id: 'files', name: '📎 File attachments', desc: 'Attach PDFs and photos to flights, hotels, bookings, docs, day items.', used: usage.files },
+  const sections = [
+    {
+      title: 'Settings ⚙️',
+      key: 'settings',
+      always: true,
+      content: 'Tap the cog icon at the top of any tab to open Settings. From here: pick a theme (Auto/Light/Dark/Neon Tokyo), turn on large text, edit Aiden\'s nap window, and manage bags for the Packing tab. The Neon Tokyo theme is fun for Tokyo evenings.',
+    },
+    {
+      title: 'Themes 🎨',
+      key: 'theme',
+      always: true,
+      content: 'Three modes plus auto. Auto follows your phone\'s system setting (light by day, dark at night). Manual override saves to the trip data so it syncs to all devices.',
+    },
+    {
+      title: 'Item detail page',
+      key: 'detail',
+      always: true,
+      content: 'Tap any item on a Day page to open its full detail screen. Big readable text, all info shown. Tap the big Edit button to make changes inline (no popup). Back button at the top returns you to the day.',
+    },
+    {
+      title: 'Group filter (T&M / C&D)',
+      key: 'filter',
+      always: true,
+      content: 'On any day, use the filter pills at the top to show only items for Tim & Michelle, only for Caroline & David, or all. Each item has an owner you can change in its detail page.',
+    },
+    {
+      title: 'Pre-departure tasks',
+      key: 'predep',
+      always: true,
+      content: 'On the Home tab there\'s a "Before we go" section with separate Tim and Michelle to-do lists. Pre-populated with Japan-relevant prep tasks. Auto-hides once the trip starts and all tasks are done.',
+      cta: usage.predep ? null : { label: 'Open Home tab', action: () => setTab('overview') },
+    },
+    {
+      title: 'Bags & packing',
+      key: 'bags',
+      always: true,
+      content: 'Packing tab now has two top tabs (Tim & Michelle / Caroline & David). Items are grouped by bag (yellow case, blue case, nappy bag etc) and bag sections collapse. Aiden\'s items go in T&M tab. T&M list pre-populated from Tim\'s previous trip.',
+    },
+    {
+      title: 'Per-person notes',
+      key: 'notes',
+      always: true,
+      content: 'Notes tab has per-person tabs: Shared, Tim, Michelle, Caroline, David. Use Shared for trip-wide info anyone might need. Personal tabs are private scratchpads for things only you care about.',
+    },
+    {
+      title: 'Times bar',
+      key: 'times',
+      always: true,
+      content: 'Day pages show a horizontal scrollable bar of all booked/confirmed times. Tap any time pill to see a full detail card with notes, map, and link to the full item.',
+    },
+    {
+      title: 'Pin items 📌',
+      key: 'pin',
+      content: 'Open any item, tap the pin icon, and it floats to the top of the day. Useful for the most important thing happening today.',
+      used: usage.pinned,
+      cta: usage.pinned ? null : { label: 'Try on Day 1', action: () => { setTab('days'); setActiveDay('d1'); } },
+    },
+    {
+      title: 'Wishes & ideas',
+      key: 'wishes',
+      content: 'On any day, scroll to the Wishes section to capture small things people want to do. Ideas are bigger possibilities — when one matures, tap "Plan" to convert it into a real itinerary item.',
+      used: usage.wishes || usage.ideas,
+    },
+    {
+      title: 'Day rating + diary ⭐',
+      key: 'rating',
+      content: 'At the bottom of each day, rate it 1-5 stars and add a one-line diary entry. After the trip, this becomes a satisfying record of which days were the best.',
+      used: usage.rating || usage.diary,
+    },
+    {
+      title: 'Expenses 💰',
+      key: 'expenses',
+      content: 'Track who paid for what across the group. Live FX conversion to GBP. Net balance shows whether T&M owe C&D or vice versa. Mark personal expenses as "Own" so they don\'t enter the split.',
+      used: usage.expenses,
+      cta: usage.expenses ? null : { label: 'Open Expenses', action: () => setTab('expenses') },
+    },
+    {
+      title: 'File attachments 📎',
+      key: 'files',
+      content: 'Upload PDFs and images on item detail pages, bookings, hotels, and documents. Useful for confirmation emails, vouchers, and tickets. Files stay accessible offline.',
+      used: usage.files,
+    },
+    {
+      title: 'Search 🔍',
+      key: 'search',
+      always: true,
+      content: 'Tap the search icon at the top. Searches across days, items, places, bookings, hotels, and contacts. Tap a result to jump straight there — items take you to the full detail page.',
+    },
+    {
+      title: 'Today mode',
+      key: 'today',
+      always: true,
+      content: 'On any day during the trip, tap the "TODAY" pill at the top. Hides everything except today\'s plan. Useful for in-the-moment use to avoid distraction.',
+    },
+    {
+      title: 'Quick add ➕',
+      key: 'quickadd',
+      always: true,
+      content: 'The big floating + button on the Home tab. Jump to the most common add actions in one tap.',
+    },
   ];
 
   return (
     <div className="fade-in">
-      <h2 className="text-2xl font-bold" style={{ color: 'var(--indigo)' }}>Guide</h2>
-      <div className="sans text-xs mt-1 mb-4" style={{ color: 'var(--sumi-soft)' }}>Tap any feature to jump to it. Greyed = not used yet.</div>
+      <div className="bg-white rounded-2xl p-5 card-shadow mb-4">
+        <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>Field guide</div>
+        <h2 className="text-2xl font-bold mt-1" style={{ color: 'var(--primary)' }}>How this app works</h2>
+        <div className="sans text-xs mt-2" style={{ color: 'var(--text-soft)' }}>Greyed-out features are ones you haven't tried yet.</div>
+      </div>
 
-      <div className="space-y-2">
-        {features.map(f => (
-          <button
-            key={f.id}
-            onClick={() => f.tab && setTab(f.tab)}
-            className={`w-full bg-white rounded-xl p-3 card-shadow text-left active:scale-[0.99] transition ${!f.used ? 'feature-unused' : ''}`}
-          >
-            <div className="flex items-start gap-3">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="font-bold text-sm" style={{ color: 'var(--indigo)' }}>{f.name}</div>
-                  {!f.used && <span className="chip chip-tbd">Not set up yet</span>}
-                </div>
-                <div className="sans text-[11px] mt-1" style={{ color: 'var(--sumi)' }}>{f.desc}</div>
-                {f.hint && <div className="sans text-[10px] mt-1 italic" style={{ color: 'var(--sumi-soft)' }}>↳ {f.hint}</div>}
-              </div>
-              {f.tab && <ChevronRight size={16} style={{ color: 'var(--sumi-soft)' }} />}
+      <div className="space-y-3">
+        {sections.map(s => {
+          const isUsed = s.always || s.used;
+          return (
+            <div key={s.key} className={`bg-white rounded-xl p-4 card-shadow ${!isUsed ? 'feature-unused' : ''}`}>
+              <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{s.title}</div>
+              <div className="sans text-xs mt-1.5 leading-relaxed" style={{ color: 'var(--text)' }}>{s.content}</div>
+              {s.cta && (
+                <button onClick={s.cta.action} className="sans text-xs font-semibold mt-2 inline-flex items-center gap-1" style={{ color: 'var(--accent)' }}>
+                  {s.cta.label} <ArrowRight size={11} />
+                </button>
+              )}
             </div>
-          </button>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -1841,195 +2313,126 @@ function GuideTab({ data, setTab, setActiveDay }) {
 
 /* ========================= TODAY MODE ========================= */
 function TodayMode({ data, day, onSave, onExit }) {
-  const dayIndex = data.days.findIndex(d => d.id === day.id);
-  const linkedBookings = (data.bookings || []).filter(b => b.date === day.date);
   const aidenStatus = data.aidenStatus[day.date];
-
-  const updateDay = (updated) => onSave({ ...data, days: data.days.map(d => d.id === day.id ? updated : d) });
-
-  // Day bag combined items
-  const allBagItems = [
-    ...(data.dayBagTemplate || []),
-    ...(day.dayBagExtras || []),
-  ];
-  const bagDone = day.dayBagDone || {};
-  const togglePack = (id) => updateDay({ ...day, dayBagDone: { ...bagDone, [id]: !bagDone[id] } });
-  const bagRemaining = allBagItems.filter(i => !bagDone[i.id]).length;
-
-  // Sort items by time
-  const sorted = [...day.items].sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ'));
-
+  const linkedBookings = (data.bookings || []).filter(b => b.date === day.date);
+  const items = day.items.slice().sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ'));
   return (
     <div className="fade-in">
-      <div className="bg-white rounded-2xl p-5 card-shadow text-center">
-        <div className="sans text-[10px] uppercase tracking-[0.25em] font-semibold" style={{ color: 'var(--vermillion)' }}>Day {dayIndex + 1} · Today</div>
-        <h2 className="text-3xl font-bold mt-1" style={{ color: 'var(--indigo)' }}>{day.title}</h2>
-        {day.titleJp && <div className="jp text-sm mt-1" style={{ color: 'var(--sumi-soft)' }}>{day.titleJp}</div>}
+      <button onClick={onExit} className="sans flex items-center gap-1 text-xs mb-4 font-semibold" style={{ color: 'var(--accent)' }}>
+        <ChevronLeft size={14} /> Exit Today mode
+      </button>
+      <div className="today-highlight rounded-xl p-4 mb-4">
+        <div className="today-badge sans inline-block">Today</div>
+        <h2 className="text-3xl font-bold mt-2" style={{ color: 'var(--primary)' }}>{day.title}</h2>
+        <div className="sans text-xs mt-1" style={{ color: 'var(--text-soft)' }}>{fmtDateLong(day.date)}</div>
         <AidenBadge status={aidenStatus} />
       </div>
-
-      {data.aidenNap?.enabled && (
-        <div className="mt-3 bg-white rounded-xl p-3 card-shadow flex items-center gap-3" style={{ borderLeft: '3px solid var(--vermillion)' }}>
-          <Baby size={16} style={{ color: 'var(--vermillion)' }} />
-          <div className="flex-1">
-            <div className="sans text-xs font-bold" style={{ color: 'var(--vermillion)' }}>{data.aidenNap.start} – {data.aidenNap.end}</div>
-            <div className="font-bold text-sm" style={{ color: 'var(--indigo)' }}>🐰 {data.aidenNap.label}</div>
-          </div>
-        </div>
-      )}
-
       {linkedBookings.length > 0 && (
-        <div className="mt-4">
-          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-2" style={{ color: 'var(--vermillion)' }}>Booked today</h3>
-          <div className="space-y-2">
-            {linkedBookings.map(b => <BookingMiniCard key={b.id} booking={b} />)}
-          </div>
+        <div className="booked-section">
+          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2" style={{ color: 'var(--accent)' }}>Booked today</div>
+          <div className="space-y-2">{linkedBookings.map(b => <BookingMiniCard key={b.id} booking={b} />)}</div>
         </div>
       )}
-
-      <div className="mt-4">
-        <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-2" style={{ color: 'var(--vermillion)' }}>Plan</h3>
-        <div className="space-y-2">
-          {sorted.map(it => {
-            const Icon = ICONS[it.type] || MapPin;
-            return (
-              <div key={it.id} className="bg-white rounded-xl p-3 card-shadow flex items-start gap-3">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(192, 48, 40, 0.1)' }}>
-                  <Icon size={14} style={{ color: 'var(--vermillion)' }} />
-                </div>
-                <div className="flex-1 min-w-0">
+      <div className="space-y-3 mt-4">
+        {items.map(item => {
+          const Icon = ICONS[item.type] || MapPin;
+          return (
+            <div key={item.id} className="bg-white rounded-xl p-4 card-shadow">
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(192, 48, 40, 0.1)' }}><Icon size={16} style={{ color: 'var(--accent)' }} /></div>
+                <div className="flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    {it.time && <div className="sans text-[11px] font-bold" style={{ color: 'var(--vermillion)' }}>{it.time}</div>}
-                    <StatusChip status={it.status} />
+                    {item.time && <div className="sans text-xs font-bold" style={{ color: 'var(--accent)' }}>{item.time}</div>}
+                    <StatusChip status={item.status} />
                   </div>
-                  <div className="font-bold text-sm" style={{ color: 'var(--indigo)' }}>{it.title}</div>
-                  {it.note && <div className="sans text-[11px] mt-0.5" style={{ color: 'var(--sumi-soft)' }}>{it.note}</div>}
-                  {it.mapUrl && <a href={it.mapUrl} target="_blank" rel="noreferrer" className="sans text-[11px] font-semibold mt-1 inline-flex items-center gap-1" style={{ color: 'var(--vermillion)' }}><MapPin size={11} /> Map</a>}
+                  <div className="font-bold mt-0.5" style={{ color: 'var(--primary)' }}>{item.title}</div>
+                  {item.note && <div className="sans text-xs mt-1.5" style={{ color: 'var(--text)' }}>{item.note}</div>}
+                  {item.mapUrl && <a href={item.mapUrl} target="_blank" rel="noreferrer" className="sans text-xs font-semibold mt-2 inline-flex items-center gap-1" style={{ color: 'var(--accent)' }}><MapPin size={11} /> Map</a>}
                 </div>
               </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="mt-4 bg-white rounded-xl p-4 card-shadow">
-        <h3 className="sans text-[10px] uppercase tracking-widest font-bold flex items-center justify-between" style={{ color: 'var(--vermillion)' }}>
-          <span>Day bag — {bagRemaining} to pack</span>
-        </h3>
-        <div className="mt-2 space-y-1.5">
-          {allBagItems.map(it => (
-            <div key={it.id} className="flex items-center gap-2 text-sm sans py-1">
-              <button onClick={() => togglePack(it.id)} className="flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center" style={{ borderColor: '#2d8659', background: bagDone[it.id] ? '#2d8659' : 'transparent' }}>
-                {bagDone[it.id] && <CheckCircle2 size={12} style={{ color: 'var(--cream)' }} />}
-              </button>
-              <span style={{ textDecoration: bagDone[it.id] ? 'line-through' : 'none', opacity: bagDone[it.id] ? 0.5 : 1, color: 'var(--sumi)' }}>{it.text}</span>
             </div>
-          ))}
-        </div>
+          );
+        })}
       </div>
-
-      <button onClick={onExit} className="w-full mt-6 sans py-3 rounded-xl border font-bold text-sm" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', color: 'var(--sumi)' }}>
-        Back to full app
-      </button>
     </div>
   );
 }
 
-/* ========================= SEARCH OVERLAY ========================= */
+/* ========================= SEARCH ========================= */
 function SearchOverlay({ query, setQuery, results, onClose, onPick }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50" style={{ backgroundColor: 'rgba(20, 29, 53, 0.7)' }} onClick={onClose}>
-      <div className="bg-white rounded-b-2xl max-w-2xl mx-auto" onClick={e => e.stopPropagation()}>
-        <div className="p-4">
-          <div className="flex items-center gap-2">
-            <Search size={18} style={{ color: 'var(--sumi-soft)' }} />
-            <input
-              autoFocus
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="Search days, items, places, bookings…"
-              className="sans flex-1 p-2 text-sm focus:outline-none"
-              style={{ color: 'var(--sumi)' }}
-            />
-            <button onClick={onClose} style={{ color: 'var(--sumi-soft)' }}><X size={18} /></button>
-          </div>
-          <div className="divider mt-2" />
-          <div className="mt-3 max-h-96 overflow-y-auto space-y-1">
-            {!query && <div className="sans text-xs text-center py-6" style={{ color: 'var(--sumi-soft)' }}>Type to search</div>}
-            {query && results.length === 0 && <div className="sans text-xs text-center py-6" style={{ color: 'var(--sumi-soft)' }}>No matches</div>}
+    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ backgroundColor: 'var(--bg)' }}>
+      <div className="max-w-2xl mx-auto px-5 py-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Search size={18} style={{ color: 'var(--accent)' }} />
+          <input autoFocus value={query} onChange={e => setQuery(e.target.value)} placeholder="Search trip…" className="sans flex-1 p-2 text-base rounded border" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+          <button onClick={onClose} className="p-2" style={{ color: 'var(--text-soft)' }}><X size={18} /></button>
+        </div>
+        {!query.trim() ? (
+          <div className="sans text-sm text-center py-12" style={{ color: 'var(--text-soft)' }}>Type to search across days, items, places, bookings…</div>
+        ) : results.length === 0 ? (
+          <div className="sans text-sm text-center py-12" style={{ color: 'var(--text-soft)' }}>No matches.</div>
+        ) : (
+          <div className="space-y-2">
             {results.map((r, i) => (
-              <button key={i} onClick={() => onPick(r)} className="w-full text-left p-2 rounded-lg hover:bg-gray-50 sans" style={{ background: 'transparent' }}>
-                <div className="text-sm font-semibold" style={{ color: 'var(--indigo)' }}>{r.label}</div>
-                {r.sub && <div className="text-[10px]" style={{ color: 'var(--sumi-soft)' }}>{r.sub}</div>}
+              <button key={i} onClick={() => onPick(r)} className="w-full bg-white rounded-xl p-3 card-shadow text-left active:scale-[0.99] search-result">
+                <div className="sans text-[10px] uppercase tracking-wider font-bold" style={{ color: 'var(--accent)' }}>{r.type}</div>
+                <div className="sans text-sm font-bold mt-0.5" style={{ color: 'var(--primary)' }}>{r.label}</div>
+                {r.sub && <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>{r.sub}</div>}
               </button>
             ))}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
 }
 
 /* ========================= QUICK ADD ========================= */
-function QuickAddModal({ data, onSave, onClose, onNavigate }) {
+function QuickAddModal({ onClose, onNavigate }) {
+  const opts = [
+    { label: 'Add expense', tab: 'expenses' },
+    { label: 'Add booking', tab: 'bookings' },
+    { label: 'Add packing item', tab: 'packing' },
+    { label: 'Add note', tab: 'notes' },
+    { label: 'Add contact', tab: 'contacts' },
+    { label: 'Add document', tab: 'docs' },
+  ];
   return (
     <Modal onClose={onClose} title="Quick add">
-      <div className="space-y-2">
-        <button onClick={() => onNavigate('expenses')} className="w-full p-3 rounded-xl text-left flex items-center gap-3" style={{ background: 'rgba(30, 42, 74, 0.05)' }}>
-          <Coins size={18} style={{ color: 'var(--vermillion)' }} />
-          <div>
-            <div className="sans font-bold text-sm" style={{ color: 'var(--indigo)' }}>Log expense</div>
-            <div className="sans text-[11px]" style={{ color: 'var(--sumi-soft)' }}>Quickly record a payment</div>
-          </div>
-        </button>
-        <button onClick={() => onNavigate('bookings')} className="w-full p-3 rounded-xl text-left flex items-center gap-3" style={{ background: 'rgba(30, 42, 74, 0.05)' }}>
-          <ListChecks size={18} style={{ color: 'var(--vermillion)' }} />
-          <div>
-            <div className="sans font-bold text-sm" style={{ color: 'var(--indigo)' }}>New booking</div>
-            <div className="sans text-[11px]" style={{ color: 'var(--sumi-soft)' }}>Add something to the booking checklist</div>
-          </div>
-        </button>
-        <button onClick={() => onNavigate('packing')} className="w-full p-3 rounded-xl text-left flex items-center gap-3" style={{ background: 'rgba(30, 42, 74, 0.05)' }}>
-          <Luggage size={18} style={{ color: 'var(--vermillion)' }} />
-          <div>
-            <div className="sans font-bold text-sm" style={{ color: 'var(--indigo)' }}>Add packing item</div>
-            <div className="sans text-[11px]" style={{ color: 'var(--sumi-soft)' }}>Add to packing list</div>
-          </div>
-        </button>
-        <button onClick={() => onNavigate('days')} className="w-full p-3 rounded-xl text-left flex items-center gap-3" style={{ background: 'rgba(30, 42, 74, 0.05)' }}>
-          <Lightbulb size={18} style={{ color: 'var(--vermillion)' }} />
-          <div>
-            <div className="sans font-bold text-sm" style={{ color: 'var(--indigo)' }}>Add idea to a day</div>
-            <div className="sans text-[11px]" style={{ color: 'var(--sumi-soft)' }}>Open Days, pick a day, then Ideas</div>
-          </div>
-        </button>
+      <div className="grid grid-cols-2 gap-2">
+        {opts.map(o => (
+          <button key={o.tab} onClick={() => onNavigate(o.tab)} className="bg-white rounded-xl p-3 card-shadow text-left active:scale-95 transition" style={{ border: '1px solid var(--card-border)' }}>
+            <Plus size={14} style={{ color: 'var(--accent)' }} />
+            <div className="sans text-sm font-bold mt-1" style={{ color: 'var(--primary)' }}>{o.label}</div>
+          </button>
+        ))}
       </div>
     </Modal>
   );
 }
 
-/* ========================= SHARED ========================= */
-function SectionHeader({ title, onAdd }) {
-  return (
-    <div className="flex items-baseline justify-between">
-      <h2 className="text-2xl font-bold" style={{ color: 'var(--indigo)' }}>{title}</h2>
-      {onAdd && (
-        <button onClick={onAdd} className="sans btn-accent px-3 py-1.5 rounded-full text-[11px] font-bold flex items-center gap-1">
-          <Plus size={12} /> Add
-        </button>
-      )}
-    </div>
-  );
-}
-
+/* ========================= SHARED COMPONENTS ========================= */
 function Modal({ children, onClose, title }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4" style={{ backgroundColor: 'rgba(20, 29, 53, 0.6)' }} onClick={onClose}>
-      <div className="bg-white rounded-t-2xl md:rounded-2xl p-5 w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xl font-bold" style={{ color: 'var(--indigo)' }}>{title}</h3>
-          <button onClick={onClose} style={{ color: 'var(--sumi-soft)' }}><X size={20} /></button>
-        </div>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }} onClick={onClose}>
+      <div className="rounded-t-2xl sm:rounded-2xl p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto" style={{ backgroundColor: 'var(--card)' }} onClick={e => e.stopPropagation()}>
+        {title && (
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold text-lg" style={{ color: 'var(--primary)' }}>{title}</h3>
+            <button onClick={onClose} style={{ color: 'var(--text-soft)' }}><X size={18} /></button>
+          </div>
+        )}
         {children}
       </div>
     </div>
@@ -2039,23 +2442,36 @@ function Modal({ children, onClose, title }) {
 function Field({ label, children }) {
   return (
     <div className="mb-3">
-      <label className="sans text-[10px] uppercase tracking-wider font-semibold block mb-1" style={{ color: 'var(--sumi-soft)' }}>{label}</label>
+      <label className="sans text-[10px] uppercase tracking-wider font-semibold block mb-1" style={{ color: 'var(--text-soft)' }}>{label}</label>
       {children}
     </div>
   );
 }
 
-function TextInput({ value, onChange, placeholder, type = 'text' }) {
+function TextInput({ value, onChange, placeholder }) {
   return (
-    <input type={type} value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} />
+    <input
+      value={value || ''}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="sans w-full p-2 rounded border text-sm"
+      style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}
+    />
   );
 }
 
-function EditorButtons({ onSave, onClose }) {
+function EditorButtons({ onSave, onClose, onDelete }) {
   return (
-    <div className="flex gap-2 mt-5">
-      <button onClick={onClose} className="sans flex-1 py-2 rounded-lg border font-bold text-sm" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', color: 'var(--sumi)' }}>Cancel</button>
-      <button onClick={onSave} className="btn-primary sans flex-1 py-2 rounded-lg font-bold text-sm">Save</button>
+    <div className="flex items-center justify-between mt-4 gap-2">
+      {onDelete ? (
+        <button onClick={onDelete} className="sans text-xs font-semibold flex items-center gap-1" style={{ color: 'var(--accent)' }}>
+          <Trash2 size={13} /> Delete
+        </button>
+      ) : <span />}
+      <div className="flex gap-2">
+        <button onClick={onClose} className="sans px-4 py-2 rounded-lg text-sm font-semibold border" style={{ borderColor: 'var(--card-border)', color: 'var(--text)' }}>Cancel</button>
+        <button onClick={onSave} className="btn-primary sans px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-1"><Save size={14} /> Save</button>
+      </div>
     </div>
   );
 }
@@ -2064,24 +2480,47 @@ function EditableField({ value, onSave, className, style, placeholder, multiline
   const [editing, setEditing] = useState(false);
   const [v, setV] = useState(value);
   useEffect(() => setV(value), [value]);
-  if (editing) {
+  if (!editing) {
     return (
-      <div>
-        {multiline ? (
-          <textarea value={v || ''} onChange={e => setV(e.target.value)} rows={3} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} />
-        ) : (
-          <input value={v || ''} onChange={e => setV(e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'rgba(30, 42, 74, 0.2)', backgroundColor: 'var(--paper)' }} />
-        )}
-        <div className="flex gap-2 mt-2">
-          <button onClick={() => { setEditing(false); setV(value); }} className="sans text-xs font-semibold" style={{ color: 'var(--sumi-soft)' }}>Cancel</button>
-          <button onClick={() => { onSave(v); setEditing(false); }} className="sans text-xs font-semibold" style={{ color: 'var(--vermillion)' }}>Save</button>
-        </div>
+      <div onClick={() => setEditing(true)} className={`${className} cursor-text`} style={{ ...style, minHeight: '20px' }}>
+        {value || <span style={{ color: 'var(--text-soft)', fontStyle: 'italic' }}>{placeholder}</span>}
       </div>
     );
   }
+  if (multiline) {
+    return (
+      <textarea autoFocus value={v} onChange={e => setV(e.target.value)} onBlur={() => { onSave(v); setEditing(false); }} rows={3} className={`${className} sans w-full p-2 rounded border`} style={{ ...style, borderColor: 'var(--card-border)', background: 'var(--paper)' }} />
+    );
+  }
   return (
-    <div className={className} style={style} onClick={() => setEditing(true)}>
-      {value || <span className="italic" style={{ color: 'var(--sumi-soft)' }}>{placeholder}</span>}
+    <input autoFocus value={v} onChange={e => setV(e.target.value)} onBlur={() => { onSave(v); setEditing(false); }} onKeyDown={e => e.key === 'Enter' && (onSave(v), setEditing(false))} className={`${className} sans w-full p-2 rounded border`} style={{ ...style, borderColor: 'var(--card-border)', background: 'var(--paper)' }} />
+  );
+}
+
+function FileUploader({ files, onUpload, onRemove, uploading }) {
+  return (
+    <div>
+      <label className="sans text-xs font-semibold inline-flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg" style={{ background: 'var(--paper)', color: 'var(--accent)', border: '1px solid var(--card-border)' }}>
+        <Upload size={14} />
+        {uploading ? 'Uploading…' : 'Add file'}
+        <input type="file" className="hidden" onChange={onUpload} disabled={uploading} />
+      </label>
+      <FileList files={files || []} onRemove={onRemove} />
+    </div>
+  );
+}
+
+function FileList({ files, onRemove }) {
+  if (!files || files.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-1">
+      {files.map(f => (
+        <div key={f.path} className="flex items-center gap-2 text-xs sans">
+          <Paperclip size={11} style={{ color: 'var(--accent)' }} />
+          <a href={f.url} target="_blank" rel="noreferrer" className="flex-1 truncate" style={{ color: 'var(--primary)' }}>{f.name}</a>
+          {onRemove && <button onClick={() => onRemove(f)} style={{ color: 'var(--text-soft)' }}><X size={12} /></button>}
+        </div>
+      ))}
     </div>
   );
 }
