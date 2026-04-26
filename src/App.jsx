@@ -1668,9 +1668,9 @@ function BookingsTab({ data, onSave }) {
               onClick={() => setActiveBooking(b.id)}
               className="w-full text-left rounded-xl p-3 card-shadow flex items-start gap-3 active:scale-[0.99] transition"
               style={{
-                background: isDone ? 'var(--paper)' : 'var(--card)',
-                opacity: isDone ? 0.6 : 1,
-                border: isDone ? '1px solid var(--card-border)' : 'none',
+                background: isDone ? 'var(--card)' : 'var(--bg)',
+                opacity: isDone ? 1 : 0.6,
+                border: isDone ? 'none' : '1px solid var(--card-border)',
               }}
             >
               <button
@@ -1681,7 +1681,7 @@ function BookingsTab({ data, onSave }) {
               </button>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <div className="sans font-bold text-sm" style={{ color: isDone ? 'var(--text-soft)' : 'var(--primary)' }}>{b.title || 'Untitled'}</div>
+                  <div className="sans font-bold text-sm" style={{ color: isDone ? 'var(--primary)' : 'var(--text-soft)' }}>{b.title || 'Untitled'}</div>
                   <StatusChip status={isDone ? 'done' : b.status} />
                 </div>
                 {b.detail && <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{b.detail}</div>}
@@ -1763,7 +1763,7 @@ function BookingDetailPage({ booking, days, onBack, onSave, onDelete }) {
           </div>
         </div>
 
-        <h2 className="text-3xl font-bold leading-tight mb-4" style={{ color: isDone ? 'var(--text-soft)' : 'var(--primary)' }}>{form.title || 'Untitled'}</h2>
+        <h2 className="text-3xl font-bold leading-tight mb-4" style={{ color: isDone ? 'var(--primary)' : 'var(--text-soft)' }}>{form.title || 'Untitled'}</h2>
 
         {form.detail && (
           <div className="detail-field">
