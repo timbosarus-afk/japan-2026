@@ -567,8 +567,8 @@ function OverviewTab({ data, setTab, setActiveDay, currentHotel, onSave }) {
   const todayDay = data.days.find(d => d.date === today);
   const nextDay = data.days.find(d => d.date >= today) || data.days[0];
   const upcomingBookings = (data.bookings || [])
-    .filter(b => b.deadline && b.status !== 'done')
-    .sort((a, b) => a.deadline.localeCompare(b.deadline))
+    .filter(b => b.status !== 'done')
+    .sort((a, b) => (a.date || 'ZZ').localeCompare(b.date || 'ZZ'))
     .slice(0, 3);
 
   return (
@@ -628,20 +628,17 @@ function OverviewTab({ data, setTab, setActiveDay, currentHotel, onSave }) {
 
       {upcomingBookings.length > 0 && (
         <div>
-          <h3 className="sans text-[10px] uppercase tracking-[0.2em] font-semibold mb-2" style={{ color: 'var(--accent)' }}>Next to book</h3>
+          <h3 className="sans text-[10px] uppercase tracking-[0.2em] font-semibold mb-2" style={{ color: 'var(--accent)' }}>Still to book</h3>
           <div className="space-y-2">
-            {upcomingBookings.map(b => {
-              const days = daysUntil(b.deadline);
-              return (
-                <button key={b.id} onClick={() => setTab('bookings')} className="w-full bg-white rounded-xl p-3 card-shadow text-left flex items-center gap-3 active:scale-[0.99] transition">
-                  <AlertCircle size={16} style={{ color: b.status === 'urgent' ? 'var(--accent)' : 'var(--gold)' }} />
-                  <div className="flex-1 min-w-0">
-                    <div className="sans text-sm font-semibold" style={{ color: 'var(--primary)' }}>{b.title}</div>
-                    <div className="sans text-[10px]" style={{ color: 'var(--text-soft)' }}>by {fmtDate(b.deadline)} · {days}d</div>
-                  </div>
-                </button>
-              );
-            })}
+            {upcomingBookings.map(b => (
+              <button key={b.id} onClick={() => setTab('bookings')} className="w-full bg-white rounded-xl p-3 card-shadow text-left flex items-center gap-3 active:scale-[0.99] transition">
+                <AlertCircle size={16} style={{ color: b.status === 'urgent' ? 'var(--accent)' : 'var(--gold)' }} />
+                <div className="flex-1 min-w-0">
+                  <div className="sans text-sm font-semibold" style={{ color: 'var(--primary)' }}>{b.title}</div>
+                  {b.date && <div className="sans text-[10px]" style={{ color: 'var(--text-soft)' }}>For: {fmtDate(b.date)}</div>}
+                </div>
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -1623,7 +1620,7 @@ function BookingsTab({ data, onSave }) {
     const aDone = a.status === 'done';
     const bDone = b.status === 'done';
     if (aDone !== bDone) return aDone ? 1 : -1;
-    return (a.deadline || 'ZZ').localeCompare(b.deadline || 'ZZ');
+    return (a.date || 'ZZ').localeCompare(b.date || 'ZZ');
   });
 
   // Detail page
@@ -1661,7 +1658,6 @@ function BookingsTab({ data, onSave }) {
       <div className="space-y-2">
         {sorted.map(b => {
           const isDone = b.status === 'done';
-          const days = b.deadline ? daysUntil(b.deadline) : null;
           return (
             <button
               key={b.id}
@@ -1687,9 +1683,6 @@ function BookingsTab({ data, onSave }) {
                 {b.detail && <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{b.detail}</div>}
                 <div className="flex items-center gap-3 sans text-[10px] mt-1" style={{ color: 'var(--text-soft)' }}>
                   {b.date && <span>For: {fmtDate(b.date)}</span>}
-                  {b.deadline && !isDone && <span style={{ color: days != null && days <= 7 ? 'var(--accent)' : 'var(--text-soft)' }}>
-                    By: {fmtDate(b.deadline)} {days != null && `(${days}d)`}
-                  </span>}
                 </div>
                 {b.files?.length > 0 && (
                   <div className="sans text-[10px] mt-1 flex items-center gap-1" style={{ color: 'var(--text-soft)' }}>
@@ -1779,18 +1772,6 @@ function BookingDetailPage({ booking, days, onBack, onSave, onDelete }) {
           </div>
         )}
 
-        {form.deadline && (
-          <div className="detail-field">
-            <div className="detail-field-label">Book by</div>
-            <div className="detail-field-value" style={{ color: !isDone && daysUntil(form.deadline) <= 7 ? 'var(--accent)' : 'var(--text)' }}>
-              {fmtDateLong(form.deadline)}
-              {!isDone && daysUntil(form.deadline) != null && (
-                <span className="sans text-sm ml-2" style={{ color: 'var(--accent)' }}>({daysUntil(form.deadline)} days)</span>
-              )}
-            </div>
-          </div>
-        )}
-
         {form.notes && (
           <div className="detail-field">
             <div className="detail-field-label">Notes</div>
@@ -1829,9 +1810,6 @@ function BookingDetailPage({ booking, days, onBack, onSave, onDelete }) {
           <option value="">— None —</option>
           {days.map(d => <option key={d.id} value={d.date}>{fmtDate(d.date)} · {d.title}</option>)}
         </select>
-      </Field>
-      <Field label="Book by (deadline)">
-        <input type="date" value={form.deadline || ''} onChange={e => set('deadline', e.target.value)} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
       </Field>
       <Field label="Status">
         <select value={form.status} onChange={e => set('status', e.target.value)} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
