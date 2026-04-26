@@ -1502,7 +1502,19 @@ function TravelTab({ data, onSave }) {
                     {f.seat && f.seat !== 'TBD' && <span>Seat: <strong style={{ color: 'var(--primary)' }}>{f.seat}</strong></span>}
                   </div>
                   {f.note && <div className="sans text-xs italic mt-2" style={{ color: 'var(--text-soft)' }}>{f.note}</div>}
-                  {f.files?.length > 0 && <FileList files={f.files} />}
+                  <FileUploader
+                    files={f.files || []}
+                    onUpload={async (e) => {
+                      const file = e.target.files?.[0]; if (!file) return;
+                      try { const u = await uploadFile(file, 'travel'); saveFlight({ ...f, files: [...(f.files || []), u] }); } catch (err) { alert('Upload failed: ' + err.message); }
+                    }}
+                    onRemove={async (file) => {
+                      if (!confirm('Remove file?')) return;
+                      try { await deleteFile(file.path); } catch {}
+                      saveFlight({ ...f, files: (f.files || []).filter(x => x.path !== file.path) });
+                    }}
+                    uploading={false}
+                  />
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <StatusChip status={f.status} />
@@ -1536,7 +1548,19 @@ function TravelTab({ data, onSave }) {
                   <div className="sans text-xs mt-2" style={{ color: 'var(--text)' }}>{fmtDate(h.checkIn)} → {fmtDate(h.checkOut)}</div>
                   {h.notes && <div className="sans text-xs italic mt-2" style={{ color: 'var(--text-soft)' }}>{h.notes}</div>}
                   {h.mapUrl && <a href={h.mapUrl} target="_blank" rel="noreferrer" className="sans text-xs font-semibold mt-2 inline-flex items-center gap-1" style={{ color: 'var(--accent)' }}><MapPin size={11} /> Map</a>}
-                  {h.files?.length > 0 && <FileList files={h.files} />}
+                  <FileUploader
+                    files={h.files || []}
+                    onUpload={async (e) => {
+                      const file = e.target.files?.[0]; if (!file) return;
+                      try { const u = await uploadFile(file, 'travel'); saveHotel({ ...h, files: [...(h.files || []), u] }); } catch (err) { alert('Upload failed: ' + err.message); }
+                    }}
+                    onRemove={async (file) => {
+                      if (!confirm('Remove file?')) return;
+                      try { await deleteFile(file.path); } catch {}
+                      saveHotel({ ...h, files: (h.files || []).filter(x => x.path !== file.path) });
+                    }}
+                    uploading={false}
+                  />
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <StatusChip status={h.status} />
