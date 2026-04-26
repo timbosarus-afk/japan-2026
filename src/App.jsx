@@ -1606,20 +1606,17 @@ function HotelEditor({ hotel, onSave, onClose, onDelete }) {
 
 /* ========================= BOOKINGS (no strikethrough on done) ========================= */
 function BookingsTab({ data, onSave }) {
-  const [editing, setEditing] = useState(null);
-  const today = TODAY();
+  const [activeBooking, setActiveBooking] = useState(null); // bookingId for detail page
 
   const saveBooking = (b) => {
-    const bookings = (data.bookings || []).find(x => x.id === b.id) ? data.bookings.map(x => x.id === b.id ? b : x) : [...(data.bookings || []), b];
+    const bookings = (data.bookings || []).find(x => x.id === b.id)
+      ? data.bookings.map(x => x.id === b.id ? b : x)
+      : [...(data.bookings || []), b];
     onSave({ ...data, bookings });
-    setEditing(null);
   };
-  const toggleDone = (b) => {
+  const toggleDone = (e, b) => {
+    e.stopPropagation();
     saveBooking({ ...b, status: b.status === 'done' ? 'tbd' : 'done' });
-  };
-  const remove = (id) => {
-    if (!confirm('Delete?')) return;
-    onSave({ ...data, bookings: data.bookings.filter(b => b.id !== id) });
   };
 
   const sorted = [...(data.bookings || [])].sort((a, b) => {
@@ -1629,11 +1626,36 @@ function BookingsTab({ data, onSave }) {
     return (a.deadline || 'ZZ').localeCompare(b.deadline || 'ZZ');
   });
 
+  // Detail page
+  if (activeBooking) {
+    const b = (data.bookings || []).find(x => x.id === activeBooking);
+    if (b) return (
+      <BookingDetailPage
+        booking={b}
+        days={data.days}
+        onBack={() => setActiveBooking(null)}
+        onSave={(updated) => { saveBooking(updated); }}
+        onDelete={() => {
+          if (!confirm('Delete this booking?')) return;
+          onSave({ ...data, bookings: data.bookings.filter(x => x.id !== activeBooking) });
+          setActiveBooking(null);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="fade-in">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Bookings to make</h2>
-        <button onClick={() => setEditing({ id: uid(), title: '', detail: '', date: '', deadline: '', status: 'tbd', notes: '', files: [] })} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
+        <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Bookings</h2>
+        <button
+          onClick={() => {
+            const newB = { id: uid(), title: '', detail: '', date: '', deadline: '', status: 'tbd', notes: '', files: [] };
+            saveBooking(newB);
+            setActiveBooking(newB.id);
+          }}
+          className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"
+        ><Plus size={10} /> Add</button>
       </div>
 
       <div className="space-y-2">
@@ -1641,62 +1663,194 @@ function BookingsTab({ data, onSave }) {
           const isDone = b.status === 'done';
           const days = b.deadline ? daysUntil(b.deadline) : null;
           return (
-            <div key={b.id} className="bg-white rounded-xl p-3 card-shadow flex items-start gap-3">
-              <button onClick={() => toggleDone(b)} className={`tickbox mt-0.5 ${isDone ? 'on' : ''}`}>
+            <button
+              key={b.id}
+              onClick={() => setActiveBooking(b.id)}
+              className="w-full text-left rounded-xl p-3 card-shadow flex items-start gap-3 active:scale-[0.99] transition"
+              style={{
+                background: isDone ? 'var(--paper)' : 'var(--card)',
+                opacity: isDone ? 0.6 : 1,
+                border: isDone ? '1px solid var(--card-border)' : 'none',
+              }}
+            >
+              <button
+                onClick={(e) => toggleDone(e, b)}
+                className={`tickbox mt-0.5 flex-shrink-0 ${isDone ? 'on' : ''}`}
+              >
                 {isDone && <CheckCircle2 size={14} />}
               </button>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <div className="sans font-bold text-sm" style={{ color: 'var(--primary)', opacity: isDone ? 0.7 : 1 }}>{b.title}</div>
-                  {!isDone && <StatusChip status={b.status} />}
-                  {isDone && <StatusChip status="done" />}
+                  <div className="sans font-bold text-sm" style={{ color: isDone ? 'var(--text-soft)' : 'var(--primary)' }}>{b.title || 'Untitled'}</div>
+                  <StatusChip status={isDone ? 'done' : b.status} />
                 </div>
                 {b.detail && <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{b.detail}</div>}
                 <div className="flex items-center gap-3 sans text-[10px] mt-1" style={{ color: 'var(--text-soft)' }}>
                   {b.date && <span>For: {fmtDate(b.date)}</span>}
-                  {b.deadline && !isDone && <span>By: {fmtDate(b.deadline)} {days != null && `(${days}d)`}</span>}
+                  {b.deadline && !isDone && <span style={{ color: days != null && days <= 7 ? 'var(--accent)' : 'var(--text-soft)' }}>
+                    By: {fmtDate(b.deadline)} {days != null && `(${days}d)`}
+                  </span>}
                 </div>
-                {b.notes && <div className="sans text-xs italic mt-1" style={{ color: 'var(--text)', opacity: isDone ? 0.6 : 1 }}>{b.notes}</div>}
-                {b.files?.length > 0 && <FileList files={b.files} />}
+                {b.files?.length > 0 && (
+                  <div className="sans text-[10px] mt-1 flex items-center gap-1" style={{ color: 'var(--text-soft)' }}>
+                    <Paperclip size={10} /> {b.files.length} file{b.files.length > 1 ? 's' : ''}
+                  </div>
+                )}
               </div>
-              <div className="flex flex-col gap-1">
-                <button onClick={() => setEditing(b)} style={{ color: 'var(--accent)' }}><Edit3 size={14} /></button>
-                <button onClick={() => remove(b.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={14} /></button>
-              </div>
-            </div>
+              <ChevronRight size={16} style={{ color: 'var(--text-soft)' }} />
+            </button>
           );
         })}
+        {sorted.length === 0 && (
+          <div className="sans text-sm text-center py-8 italic" style={{ color: 'var(--text-soft)' }}>No bookings yet.</div>
+        )}
       </div>
-
-      {editing && <BookingForm booking={editing} days={data.days} onSave={saveBooking} onClose={() => setEditing(null)} />}
     </div>
   );
 }
 
-function BookingForm({ booking, days, onSave, onClose }) {
-  const [b, setB] = useState(booking);
-  const set = (k, v) => setB({ ...b, [k]: v });
+function BookingDetailPage({ booking, days, onBack, onSave, onDelete }) {
+  const [editing, setEditing] = useState(!booking.title); // open in edit mode if brand new
+  const [form, setForm] = useState(booking);
+  const [uploading, setUploading] = useState(false);
+  const set = (k, v) => setForm({ ...form, [k]: v });
+
+  useEffect(() => { setForm(booking); }, [booking.id]);
+
+  const saveEdit = () => { onSave(form); setEditing(false); };
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const u = await uploadFile(file, 'bookings');
+      const updated = { ...form, files: [...(form.files || []), u] };
+      setForm(updated);
+      onSave(updated);
+    } catch (err) { alert('Upload failed: ' + err.message); }
+    setUploading(false);
+  };
+
+  const removeFile = async (file) => {
+    if (!confirm('Remove file?')) return;
+    try { await deleteFile(file.path); } catch {}
+    const updated = { ...form, files: (form.files || []).filter(f => f.path !== file.path) };
+    setForm(updated);
+    onSave(updated);
+  };
+
+  const isDone = form.status === 'done';
+
+  if (!editing) {
+    return (
+      <div className="fade-in">
+        <button onClick={onBack} className="sans flex items-center gap-1 text-sm mb-5 font-semibold" style={{ color: 'var(--accent)' }}>
+          <ChevronLeft size={16} /> All bookings
+        </button>
+
+        <div className="flex items-center gap-3 mb-4">
+          <button
+            onClick={() => onSave({ ...form, status: isDone ? 'tbd' : 'done' })}
+            className={`tickbox w-10 h-10 flex-shrink-0 ${isDone ? 'on' : ''}`}
+            style={{ width: 40, height: 40 }}
+          >
+            {isDone && <CheckCircle2 size={18} />}
+          </button>
+          <div>
+            <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>Booking</div>
+            <StatusChip status={isDone ? 'done' : form.status} />
+          </div>
+        </div>
+
+        <h2 className="text-3xl font-bold leading-tight mb-4" style={{ color: isDone ? 'var(--text-soft)' : 'var(--primary)' }}>{form.title || 'Untitled'}</h2>
+
+        {form.detail && (
+          <div className="detail-field">
+            <div className="detail-field-label">Detail</div>
+            <div className="detail-field-value">{form.detail}</div>
+          </div>
+        )}
+
+        {form.date && (
+          <div className="detail-field">
+            <div className="detail-field-label">Used on</div>
+            <div className="detail-field-value">{fmtDateLong(form.date)}</div>
+          </div>
+        )}
+
+        {form.deadline && (
+          <div className="detail-field">
+            <div className="detail-field-label">Book by</div>
+            <div className="detail-field-value" style={{ color: !isDone && daysUntil(form.deadline) <= 7 ? 'var(--accent)' : 'var(--text)' }}>
+              {fmtDateLong(form.deadline)}
+              {!isDone && daysUntil(form.deadline) != null && (
+                <span className="sans text-sm ml-2" style={{ color: 'var(--accent)' }}>({daysUntil(form.deadline)} days)</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {form.notes && (
+          <div className="detail-field">
+            <div className="detail-field-label">Notes</div>
+            <div className="detail-field-value" style={{ whiteSpace: 'pre-wrap' }}>{form.notes}</div>
+          </div>
+        )}
+
+        <div className="detail-field">
+          <div className="detail-field-label">Attachments</div>
+          <FileUploader files={form.files || []} onUpload={handleUpload} onRemove={removeFile} uploading={uploading} />
+        </div>
+
+        <button onClick={() => setEditing(true)} className="detail-edit-btn">
+          <Edit3 size={18} className="inline mr-2" /> Edit booking
+        </button>
+
+        <button onClick={onDelete} className="sans w-full mt-3 py-3 rounded-xl border font-bold text-sm" style={{ borderColor: 'var(--card-border)', color: 'var(--text-soft)' }}>
+          <Trash2 size={14} className="inline mr-2" /> Delete booking
+        </button>
+      </div>
+    );
+  }
+
+  // Edit mode
   return (
-    <Modal onClose={onClose} title={booking.title ? 'Edit booking' : 'New booking'}>
-      <Field label="Title"><TextInput value={b.title} onChange={v => set('title', v)} /></Field>
-      <Field label="Detail"><TextInput value={b.detail} onChange={v => set('detail', v)} /></Field>
+    <div className="fade-in">
+      <button onClick={() => { setForm(booking); setEditing(false); }} className="sans flex items-center gap-1 text-sm mb-5 font-semibold" style={{ color: 'var(--accent)' }}>
+        <ChevronLeft size={16} /> Cancel edit
+      </button>
+      <h2 className="text-2xl font-bold mb-4" style={{ color: 'var(--primary)' }}>Edit booking</h2>
+
+      <Field label="Title"><TextInput value={form.title} onChange={v => set('title', v)} /></Field>
+      <Field label="Detail"><TextInput value={form.detail} onChange={v => set('detail', v)} /></Field>
       <Field label="Used on (day)">
-        <select value={b.date || ''} onChange={e => set('date', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+        <select value={form.date || ''} onChange={e => set('date', e.target.value)} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
           <option value="">— None —</option>
           {days.map(d => <option key={d.id} value={d.date}>{fmtDate(d.date)} · {d.title}</option>)}
         </select>
       </Field>
-      <Field label="Deadline"><input type="date" value={b.deadline || ''} onChange={e => set('deadline', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
+      <Field label="Book by (deadline)">
+        <input type="date" value={form.deadline || ''} onChange={e => set('deadline', e.target.value)} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+      </Field>
       <Field label="Status">
-        <select value={b.status} onChange={e => set('status', e.target.value)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+        <select value={form.status} onChange={e => set('status', e.target.value)} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
           <option value="tbd">TBD</option>
           <option value="urgent">Urgent</option>
           <option value="done">Done</option>
         </select>
       </Field>
-      <Field label="Notes"><textarea value={b.notes || ''} onChange={e => set('notes', e.target.value)} rows={2} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} /></Field>
-      <EditorButtons onSave={() => onSave(b)} onClose={onClose} />
-    </Modal>
+      <Field label="Notes">
+        <textarea value={form.notes || ''} onChange={e => set('notes', e.target.value)} rows={4} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+      </Field>
+
+      <div className="flex gap-2 mt-6">
+        <button onClick={() => { setForm(booking); setEditing(false); }} className="sans flex-1 py-3 rounded-xl border font-bold text-base" style={{ borderColor: 'var(--card-border)', color: 'var(--text)' }}>Cancel</button>
+        <button onClick={saveEdit} className="btn-primary sans flex-1 py-3 rounded-xl font-bold text-base flex items-center justify-center gap-2">
+          <Save size={16} /> Save
+        </button>
+      </div>
+    </div>
   );
 }
 
