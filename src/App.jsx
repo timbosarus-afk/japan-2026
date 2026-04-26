@@ -156,6 +156,7 @@ export default function App() {
   const [todayMode, setTodayMode] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [largeText, setLargeText] = useLargeText();
+  const [dayLinkedBooking, setDayLinkedBooking] = useState(null);
   const saveTimer = useRef(null);
 
   useTheme(data.theme, largeText);
@@ -340,6 +341,7 @@ export default function App() {
               onBack={() => setActiveDay(null)}
               onSave={persist}
               onOpenItem={(itemId) => setActiveItem({ dayId: activeDay, itemId })}
+              onOpenBooking={(bookingId) => { setTab('bookings'); setTimeout(() => setDayLinkedBooking(bookingId), 50); setActiveDay(null); }}
             />
           ) : (
             <DaysListTab data={data} onSelect={setActiveDay} />
@@ -347,7 +349,7 @@ export default function App() {
         ) : tab === 'travel' ? (
           <TravelTab data={data} onSave={persist} />
         ) : tab === 'bookings' ? (
-          <BookingsTab data={data} onSave={persist} />
+          <BookingsTab data={data} onSave={persist} initialBookingId={dayLinkedBooking} onClearInitial={() => setDayLinkedBooking(null)} />
         ) : tab === 'expenses' ? (
           <ExpensesTab data={data} onSave={persist} />
         ) : tab === 'docs' ? (
@@ -808,7 +810,7 @@ function DaysListTab({ data, onSelect }) {
 }
 
 /* ========================= DAY DETAIL ========================= */
-function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem }) {
+function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }) {
   const day = data.days.find(d => d.id === dayId);
   const [groupFilter, setGroupFilter] = useState({ tm: false, cd: false }); // both unselected = show all
   const [expandedTime, setExpandedTime] = useState(null); // item id of the expanded times-bar pill
@@ -891,15 +893,20 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem }) {
         <span className="sans text-[10px] self-center italic" style={{ color: 'var(--text-soft)' }}>{!groupFilter.tm && !groupFilter.cd ? 'All shown' : ''}</span>
       </div>
 
-      {/* Important times bar */}
+      {/* Confirmed times bar */}
       {importantTimes.length > 0 && (
-        <div className="times-bar">
-          {importantTimes.map(it => (
-            <button key={it.id} className="time-pill" onClick={() => setExpandedTime(it.id === expandedTime ? null : it.id)}>
-              <div className="t sans">{it.time}</div>
-              <div className="l sans">{it.title.length > 18 ? it.title.slice(0, 16) + '…' : it.title}</div>
-            </button>
-          ))}
+        <div className="mb-3">
+          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2 flex items-center gap-1" style={{ color: 'var(--accent)' }}>
+            <Clock size={12} /> Confirmed times
+          </div>
+          <div className="times-bar">
+            {importantTimes.map(it => (
+              <button key={it.id} className="time-pill" onClick={() => setExpandedTime(it.id === expandedTime ? null : it.id)}>
+                <div className="t sans">{it.time}</div>
+                <div className="l sans">{it.title.length > 18 ? it.title.slice(0, 16) + '…' : it.title}</div>
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {/* Expanded time card */}
@@ -930,12 +937,19 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem }) {
 
       {/* Booked for today */}
       {linkedBookings.length > 0 && (
-        <div className="booked-section">
+        <div className="mb-3">
           <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2 flex items-center gap-1" style={{ color: 'var(--accent)' }}>
             <Ticket size={12} /> Booked for today
           </div>
-          <div className="space-y-2">
-            {linkedBookings.map(b => <BookingMiniCard key={b.id} booking={b} />)}
+          <div className="times-bar">
+            {linkedBookings.map(b => (
+              <button key={b.id} className="time-pill" onClick={() => onOpenBooking(b.id)}>
+                <div className="t sans flex items-center gap-1 justify-center">
+                  <StatusChip status={b.status} />
+                </div>
+                <div className="l sans">{b.title.length > 18 ? b.title.slice(0, 16) + '…' : b.title}</div>
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -1602,8 +1616,12 @@ function HotelEditor({ hotel, onSave, onClose, onDelete }) {
 }
 
 /* ========================= BOOKINGS (no strikethrough on done) ========================= */
-function BookingsTab({ data, onSave }) {
-  const [activeBooking, setActiveBooking] = useState(null); // bookingId for detail page
+function BookingsTab({ data, onSave, initialBookingId, onClearInitial }) {
+  const [activeBooking, setActiveBooking] = useState(initialBookingId || null);
+
+  useEffect(() => {
+    if (initialBookingId) { setActiveBooking(initialBookingId); onClearInitial?.(); }
+  }, [initialBookingId]); // bookingId for detail page
 
   const saveBooking = (b) => {
     const bookings = (data.bookings || []).find(x => x.id === b.id)
@@ -2460,9 +2478,18 @@ function TodayMode({ data, day, onSave, onExit }) {
         <AidenBadge status={aidenStatus} />
       </div>
       {linkedBookings.length > 0 && (
-        <div className="booked-section">
-          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2" style={{ color: 'var(--accent)' }}>Booked today</div>
-          <div className="space-y-2">{linkedBookings.map(b => <BookingMiniCard key={b.id} booking={b} />)}</div>
+        <div className="mb-3">
+          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2 flex items-center gap-1" style={{ color: 'var(--accent)' }}>
+            <Ticket size={12} /> Booked today
+          </div>
+          <div className="times-bar">
+            {linkedBookings.map(b => (
+              <div key={b.id} className="time-pill">
+                <div className="t sans flex items-center gap-1 justify-center"><StatusChip status={b.status} /></div>
+                <div className="l sans">{b.title.length > 18 ? b.title.slice(0, 16) + '…' : b.title}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       <div className="space-y-3 mt-4">
