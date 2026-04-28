@@ -114,11 +114,16 @@ function migrate(data) {
   // Packing T&M — migrate from old single list if needed
   d.packing = (d.packing || []).map(p => {
     if (typeof p.gotIt === 'undefined' && typeof p.packed === 'undefined') {
-      return { id: p.id, text: p.text, gotIt: !!p.done, packed: !!p.done, owner: 'TM', bagId: p.bagId || 'bag_tim_carry' };
+      return { id: p.id, text: p.text, gotIt: !!p.done, packed: !!p.done, owner: 'TM', bagId: p.bagId || '' };
     }
-    return { ...p, owner: p.owner || 'TM', bagId: p.bagId || 'bag_tim_carry' };
+    return { ...p, owner: p.owner || 'TM', bagId: p.bagId !== undefined ? p.bagId : '' };
   });
   d.packingCD = (d.packingCD || []).map(p => ({ ...p, owner: 'CD', bagId: p.bagId || '' }));
+
+  // Merge new packing items from TRIP_DATA that aren't already saved (match by text)
+  const existingTexts = new Set(d.packing.map(p => p.text.toLowerCase().trim()));
+  const newItems = TRIP_DATA.packing.filter(p => !existingTexts.has(p.text.toLowerCase().trim()));
+  if (newItems.length > 0) d.packing = [...d.packing, ...newItems];
 
   return d;
 }
@@ -2238,7 +2243,6 @@ function PackingTab({ data, onSave }) {
           const bagItems = filtered.filter(p => p.bagId === bag.id);
           const allBagItems = list.filter(p => p.bagId === bag.id);
           const packedCount = allBagItems.filter(p => p.packed).length;
-          // Auto-expand if there's an active search and this bag has matches
           const hasSearchMatch = searchQuery.trim() && bagItems.length > 0;
           const isCollapsed = hasSearchMatch ? false : collapsed[bag.id];
           return (
@@ -2254,25 +2258,11 @@ function PackingTab({ data, onSave }) {
               {!isCollapsed && (
                 <div className="bag-section-body">
                   {bagItems.length === 0 ? (
-                    <div className="sans text-xs italic py-2" style={{ color: 'var(--text-soft)' }}>No items in this bag {filter !== 'all' && 'matching filter'}.</div>
+                    <div className="sans text-xs italic py-2" style={{ color: 'var(--text-soft)' }}>No items in this bag{filter !== 'all' ? ' matching filter' : ''}.</div>
                   ) : (
                     <div className="space-y-1">
                       {bagItems.map(p => (
-                        <div key={p.id} className="flex items-center gap-2 py-1">
-                          <div className="dual-check">
-                            <button onClick={() => toggleGot(p.id)} className={`check-got ${p.gotIt ? 'on' : ''}`} aria-label="Got it">
-                              {p.gotIt && <CheckCircle2 size={12} />}
-                            </button>
-                            <button onClick={() => togglePacked(p.id)} disabled={!p.gotIt} className={`check-pack ${p.packed ? 'on' : ''}`} aria-label="Packed">
-                              {p.packed && <CheckCircle2 size={12} />}
-                            </button>
-                          </div>
-                          <span className="flex-1 sans text-sm" style={{ color: 'var(--text)', textDecoration: p.packed ? 'line-through' : 'none', opacity: p.packed ? 0.5 : 1 }}>{p.text}</span>
-                          <select value={p.bagId} onChange={e => moveBag(p.id, e.target.value)} className="sans text-[10px] p-1 rounded border" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text-soft)' }}>
-                            {bags.map(b => <option key={b.id} value={b.id}>{b.icon} {b.name}</option>)}
-                          </select>
-                          <button onClick={() => remove(p.id)} style={{ color: 'var(--text-soft)' }}><X size={13} /></button>
-                        </div>
+                        <PackingItemRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} />
                       ))}
                     </div>
                   )}
@@ -2281,6 +2271,33 @@ function PackingTab({ data, onSave }) {
             </div>
           );
         })}
+
+        {/* Unassigned section — items with no bag or unknown bagId */}
+        {(() => {
+          const knownIds = new Set(bags.map(b => b.id));
+          const unassigned = filtered.filter(p => !p.bagId || !knownIds.has(p.bagId));
+          if (unassigned.length === 0) return null;
+          const isCollapsed = collapsed['__unassigned__'];
+          return (
+            <div className="bag-section" style={{ borderColor: 'var(--accent)', borderWidth: 1 }}>
+              <button onClick={() => setCollapsed({ ...collapsed, '__unassigned__': !isCollapsed })} className="bag-section-header">
+                <span className="text-2xl">📦</span>
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="sans font-bold" style={{ color: 'var(--accent)' }}>Unassigned</div>
+                  <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>{unassigned.length} item{unassigned.length !== 1 ? 's' : ''} — assign a bag using the dropdown</div>
+                </div>
+                {isCollapsed ? <ChevronDown size={18} style={{ color: 'var(--text-soft)' }} /> : <ChevronUp size={18} style={{ color: 'var(--text-soft)' }} />}
+              </button>
+              {!isCollapsed && (
+                <div className="bag-section-body space-y-1">
+                  {unassigned.map(p => (
+                    <PackingItemRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Add */}
@@ -2298,6 +2315,28 @@ function PackingTab({ data, onSave }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ========================= PACKING ITEM ROW ========================= */
+function PackingItemRow({ p, bags, onToggleGot, onTogglePacked, onMoveBag, onRemove }) {
+  return (
+    <div className="flex items-center gap-2 py-1">
+      <div className="dual-check">
+        <button onClick={onToggleGot} className={`check-got ${p.gotIt ? 'on' : ''}`} aria-label="Got it">
+          {p.gotIt && <CheckCircle2 size={12} />}
+        </button>
+        <button onClick={onTogglePacked} disabled={!p.gotIt} className={`check-pack ${p.packed ? 'on' : ''}`} aria-label="Packed">
+          {p.packed && <CheckCircle2 size={12} />}
+        </button>
+      </div>
+      <span className="flex-1 sans text-sm" style={{ color: 'var(--text)', textDecoration: p.packed ? 'line-through' : 'none', opacity: p.packed ? 0.5 : 1 }}>{p.text}</span>
+      <select value={p.bagId || ''} onChange={e => onMoveBag(e.target.value)} className="sans text-[10px] p-1 rounded border" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text-soft)', maxWidth: 120 }}>
+        <option value="">— No bag —</option>
+        {bags.map(b => <option key={b.id} value={b.id}>{b.icon} {b.name}</option>)}
+      </select>
+      <button onClick={onRemove} style={{ color: 'var(--text-soft)' }}><X size={13} /></button>
     </div>
   );
 }
