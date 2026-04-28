@@ -73,6 +73,7 @@ function migrate(data) {
   d.dayBagTemplate = d.dayBagTemplate || [];
   d.expenses = d.expenses || [];
   d.fxRates = d.fxRates || null;
+  d.shoppingList = d.shoppingList || [];
   d.bags = d.bags && d.bags.length > 0 ? d.bags : DEFAULT_BAGS;
   d.theme = d.theme || 'auto';
   d.predepTasks = d.predepTasks || { tim: [], michelle: [] };
@@ -273,6 +274,9 @@ export default function App() {
     setActiveDay(dayId);
     setActiveItem({ dayId, itemId });
   };
+
+  // Scroll to top on every navigation
+  useEffect(() => { window.scrollTo(0, 0); }, [tab, activeDay, activeItem]);
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--bg)' }}>
@@ -730,7 +734,7 @@ function PreDepartureSection({ data, onSave }) {
           </div>
           <div className="space-y-1">
             {list.length === 0 && <div className="sans text-xs italic text-center py-3" style={{ color: 'var(--text-soft)' }}>No tasks yet — add one below.</div>}
-            {list.map(t => (
+            {[...list].sort((a, b) => (a.done === b.done ? 0 : a.done ? 1 : -1)).map(t => (
               <div key={t.id} className="flex items-center gap-3 py-1.5">
                 <button onClick={() => toggle(t.id)} className={`tickbox ${t.done ? 'on' : ''}`}>
                   {t.done && <CheckCircle2 size={13} />}
@@ -2187,6 +2191,21 @@ function PackingTab({ data, onSave }) {
       </div>
 
       {/* Stats + filter */}
+      {/* Legend */}
+      <div className="flex items-center gap-4 mb-3 sans text-xs" style={{ color: 'var(--text-soft)' }}>
+        <div className="flex items-center gap-1.5">
+          <div className="w-5 h-5 rounded-full border-2 flex items-center justify-center" style={{ borderColor: 'var(--primary)', background: 'var(--primary)' }}><CheckCircle2 size={11} style={{ color: 'var(--bg)' }} /></div>
+          <span>Got it</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-5 h-5 rounded-full border-2 flex items-center justify-center" style={{ borderColor: '#2d8659', background: '#2d8659' }}><CheckCircle2 size={11} style={{ color: 'var(--bg)' }} /></div>
+          <span>Packed in bag</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-5 h-5 rounded-full border-2" style={{ borderColor: 'var(--primary)' }} />
+          <span>Still needed</span>
+        </div>
+      </div>
       <div className="bg-white rounded-xl p-3 card-shadow mb-3">
         <div className="grid grid-cols-4 gap-2 text-center sans">
           <div><div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-soft)' }}>Total</div><div className="text-lg font-bold mt-0.5" style={{ color: 'var(--primary)' }}>{totals.all}</div></div>
@@ -2286,13 +2305,18 @@ function PackingTab({ data, onSave }) {
 /* ========================= NOTES (per-person tabs) ========================= */
 function NotesTab({ data, onSave }) {
   const [active, setActive] = useState('shared');
-  const [text, setText] = useState(data.notes[active] || '');
+  const [text, setText] = useState(data.notes?.shared || '');
   const [saved, setSaved] = useState(false);
 
-  useEffect(() => { setText(data.notes[active] || ''); setSaved(false); }, [active]);
+  const notes = typeof data.notes === 'object' ? data.notes : { shared: data.notes || '' };
+
+  useEffect(() => {
+    if (active !== 'shopping') setText(notes[active] || '');
+    setSaved(false);
+  }, [active]);
 
   const save = () => {
-    onSave({ ...data, notes: { ...data.notes, [active]: text } });
+    onSave({ ...data, notes: { ...notes, [active]: text } });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -2303,13 +2327,14 @@ function NotesTab({ data, onSave }) {
     { id: 'michelle', label: 'Michelle' },
     { id: 'caroline', label: 'Caroline' },
     { id: 'david', label: 'David' },
+    { id: 'shopping', label: '🛍 Shopping' },
   ];
 
   return (
     <div className="fade-in">
       <div className="flex gap-1 mb-4 overflow-x-auto hide-scroll">
         {tabs.map(t => (
-          <button key={t.id} onClick={() => setActive(t.id)} className={`flex-shrink-0 sans px-3 py-1.5 text-xs font-bold rounded-full ${active === t.id ? '' : ''}`} style={
+          <button key={t.id} onClick={() => setActive(t.id)} className="flex-shrink-0 sans px-3 py-1.5 text-xs font-bold rounded-full" style={
             active === t.id
               ? { background: 'var(--primary)', color: 'var(--bg)' }
               : { background: 'rgba(30, 42, 74, 0.06)', color: 'var(--text-soft)' }
@@ -2317,22 +2342,139 @@ function NotesTab({ data, onSave }) {
         ))}
       </div>
 
-      <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2 flex items-center gap-2" style={{ color: 'var(--accent)' }}>
-        {active === 'shared' ? <><Heart size={12} /> Shared notes (everyone sees)</> : <><User size={12} /> {tabs.find(t => t.id === active)?.label}'s private scratchpad</>}
+      {active === 'shopping' ? (
+        <ShoppingList data={data} onSave={onSave} />
+      ) : (
+        <>
+          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2 flex items-center gap-2" style={{ color: 'var(--accent)' }}>
+            {active === 'shared' ? <><Heart size={12} /> Shared notes (everyone sees)</> : <><User size={12} /> {tabs.find(t => t.id === active)?.label}'s private scratchpad</>}
+          </div>
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            rows={20}
+            placeholder={active === 'shared' ? 'Trip-wide notes anyone in the group can see…' : 'Personal notes only you care about…'}
+            className="sans w-full p-4 rounded-xl border text-sm leading-relaxed"
+            style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)', minHeight: '400px' }}
+          />
+          <div className="flex items-center gap-2 mt-3">
+            <button onClick={save} className="btn-primary sans px-5 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
+              <Save size={14} /> Save
+            </button>
+            {saved && <span className="sans text-xs" style={{ color: 'var(--accent)' }}>Saved!</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ========================= SHOPPING LIST ========================= */
+function ShoppingList({ data, onSave }) {
+  const PEOPLE = ['Tim', 'Michelle', 'Caroline', 'David', 'Everyone'];
+  const [personFilter, setPersonFilter] = useState('All');
+  const [adding, setAdding] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
+  const [form, setForm] = useState({ name: '', url: '', note: '', person: 'Tim' });
+
+  const items = data.shoppingList || [];
+
+  const updateItems = (newItems) => onSave({ ...data, shoppingList: newItems });
+
+  const toggleBought = (id) => {
+    updateItems(items.map(i => i.id === id ? { ...i, bought: !i.bought } : i));
+  };
+  const deleteItem = (id) => updateItems(items.filter(i => i.id !== id));
+
+  const saveItem = () => {
+    if (!form.name.trim()) return;
+    if (editingItem) {
+      updateItems(items.map(i => i.id === editingItem ? { ...i, ...form } : i));
+      setEditingItem(null);
+    } else {
+      updateItems([...items, { id: uid(), ...form, bought: false }]);
+    }
+    setForm({ name: '', url: '', note: '', person: 'Tim' });
+    setAdding(false);
+  };
+
+  const startEdit = (item) => {
+    setForm({ name: item.name, url: item.url || '', note: item.note || '', person: item.person });
+    setEditingItem(item.id);
+    setAdding(true);
+  };
+
+  const filtered = useMemo(() => {
+    const base = personFilter === 'All' ? items : items.filter(i => i.person === personFilter || i.person === 'Everyone');
+    return [...base].sort((a, b) => a.bought === b.bought ? 0 : a.bought ? 1 : -1);
+  }, [items, personFilter]);
+
+  return (
+    <div>
+      {/* Person filter */}
+      <div className="flex gap-1.5 flex-wrap mb-3">
+        {['All', ...PEOPLE].map(p => (
+          <button key={p} onClick={() => setPersonFilter(p)} className={`filter-pill sans ${personFilter === p ? 'active' : ''}`}>{p}</button>
+        ))}
       </div>
-      <textarea
-        value={text}
-        onChange={e => setText(e.target.value)}
-        rows={20}
-        placeholder={active === 'shared' ? 'Trip-wide notes anyone in the group can see…' : 'Personal notes only you care about…'}
-        className="sans w-full p-4 rounded-xl border text-sm leading-relaxed"
-        style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)', minHeight: '400px' }}
-      />
-      <div className="flex items-center gap-2 mt-3">
-        <button onClick={save} className="btn-primary sans px-5 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
-          <Save size={14} /> Save
-        </button>
-        {saved && <span className="sans text-xs" style={{ color: 'var(--accent)' }}>Saved!</span>}
+
+      {/* Add button */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>
+          {filtered.filter(i => !i.bought).length} to buy · {filtered.filter(i => i.bought).length} bought
+        </div>
+        <button onClick={() => { setAdding(true); setEditingItem(null); setForm({ name: '', url: '', note: '', person: 'Tim' }); }} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
+      </div>
+
+      {/* Add / edit form */}
+      {adding && (
+        <div className="p-4 rounded-xl mb-4" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>{editingItem ? 'Edit item' : 'New item'}</div>
+          <Field label="Item name"><TextInput value={form.name} onChange={v => setForm({ ...form, name: v })} placeholder="e.g. Beams shirt" /></Field>
+          <Field label="Link (optional)"><TextInput value={form.url} onChange={v => setForm({ ...form, url: v })} placeholder="https://…" /></Field>
+          <Field label="Note (optional)"><TextInput value={form.note} onChange={v => setForm({ ...form, note: v })} placeholder="Size, colour, price range…" /></Field>
+          <Field label="Who wants it">
+            <div className="flex gap-1.5 flex-wrap">
+              {PEOPLE.map(p => (
+                <button key={p} onClick={() => setForm({ ...form, person: p })} className={`filter-pill sans ${form.person === p ? 'active' : ''}`}>{p}</button>
+              ))}
+            </div>
+          </Field>
+          <div className="flex gap-2 mt-3">
+            <button onClick={() => { setAdding(false); setEditingItem(null); }} className="sans flex-1 py-2 rounded-lg border font-bold text-sm" style={{ borderColor: 'var(--card-border)', color: 'var(--text)' }}>Cancel</button>
+            <button onClick={saveItem} className="btn-primary sans flex-1 py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1"><Save size={14} /> Save</button>
+          </div>
+        </div>
+      )}
+
+      {/* List */}
+      <div className="space-y-2">
+        {filtered.length === 0 && (
+          <div className="sans text-xs italic text-center py-8" style={{ color: 'var(--text-soft)' }}>No items yet — tap Add to start your shopping list.</div>
+        )}
+        {filtered.map(item => (
+          <div key={item.id} className="rounded-xl p-3 card-shadow flex items-start gap-3" style={{ background: item.bought ? 'var(--paper)' : 'var(--card)', opacity: item.bought ? 0.65 : 1 }}>
+            <button onClick={() => toggleBought(item.id)} className={`tickbox mt-0.5 flex-shrink-0 ${item.bought ? 'on' : ''}`}>
+              {item.bought && <CheckCircle2 size={14} />}
+            </button>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{item.name}</span>
+                <span className="chip" style={{ background: 'rgba(30, 42, 74, 0.08)', color: 'var(--primary)' }}>{item.person}</span>
+              </div>
+              {item.note && <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{item.note}</div>}
+              {item.url && (
+                <a href={item.url} target="_blank" rel="noreferrer" className="sans text-xs font-semibold mt-1 inline-flex items-center gap-1" style={{ color: 'var(--accent)' }}>
+                  <ExternalLink size={11} /> View link
+                </a>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => startEdit(item)} style={{ color: 'var(--accent)' }}><Edit3 size={13} /></button>
+              <button onClick={() => deleteItem(item.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={13} /></button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
