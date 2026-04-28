@@ -196,6 +196,50 @@ const TM_PACKING = [
   pk("Tim's hat", 'bag_onday'),
   pk("Michelle's hat", 'bag_onday'),
   pk('Sun cream', 'bag_onday'),
+
+  // New items — no bag assigned yet
+  pk('Nurofen x2', ''),
+  pk('Calpol x1', ''),
+  pk('Crew jumper', ''),
+  pk('Uniqlo trousers', ''),
+  pk('Blue jeans', ''),
+  pk("Trainers x1 (Michelle)", ''),
+  pk('Sunglasses', ''),
+  pk('Glasses', ''),
+  pk('Contacts (Michelle)', ''),
+  pk('Contacts (Tim)', ''),
+  pk('Hair roller', ''),
+  pk('Face cream', ''),
+  pk('SPF (used one)', ''),
+  pk('Chargers', ''),
+  pk('Book', ''),
+  pk('Hand sanitiser', ''),
+  pk('Water bottle', ''),
+  pk('Tea bags (decaf)', ''),
+  pk('Tea bags', ''),
+  pk('Weetabix', ''),
+  pk('Porridge', ''),
+  pk('Raincoat', ''),
+  pk('Makeup', ''),
+  pk('Underwear', ''),
+  pk('Bra', ''),
+  pk('Panty liners', ''),
+  pk('Pads', ''),
+
+  // Aiden new items — no bag assigned yet
+  pk('Disposable bibs (Aiden)', ''),
+  pk('Shorts (Aiden)', ''),
+  pk('T-shirts (Aiden)', ''),
+  pk('Sleep bag summer (Aiden)', ''),
+  pk('Zip suits (Aiden)', ''),
+  pk('Nappies (Aiden)', ''),
+  pk('Wipes (Aiden)', ''),
+  pk('Bodysuits (Aiden)', ''),
+  pk('Long sleeve t-shirts (Aiden)', ''),
+  pk('Swim nappies (Aiden)', ''),
+  pk('Water bottles Tim x2', ''),
+  pk('Toys for flight (Aiden)', ''),
+  pk('Bath wash (Aiden)', ''),
 ];
 
 // Pre-departure tasks
@@ -489,6 +533,7 @@ export const TRIP_DATA = {
   packing: TM_PACKING,
   // C&D packing starts empty — they'll fill it in
   packingCD: [],
+  shoppingList: [],
 
   // Notes — now object with per-person tabs
   notes: {
