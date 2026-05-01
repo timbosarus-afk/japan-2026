@@ -1287,6 +1287,8 @@ function DayMapPage({ day, dayIndex, onBack }) {
     return (day.items || []).filter(it => it.title && it.type !== 'note' && it.type !== 'document');
   }, [day.items]);
 
+  const [debugInfo, setDebugInfo] = useState([]);
+
   useEffect(() => {
     let cancelled = false;
     let map, geocoder, markers = [], polyline;
@@ -1311,33 +1313,55 @@ function DayMapPage({ day, dayIndex, onBack }) {
 
         geocoder = new maps.Geocoder();
 
-        // Extract a query string from a maps URL, fall back to item title
+        // Try to extract lat/lng directly from URL first (most reliable)
+        const extractCoords = (url) => {
+          if (!url) return null;
+          // Match @lat,lng or ll=lat,lng patterns
+          const atMatch = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+          if (atMatch) return { lat: parseFloat(atMatch[1]), lng: parseFloat(atMatch[2]) };
+          const llMatch = url.match(/[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/);
+          if (llMatch) return { lat: parseFloat(llMatch[1]), lng: parseFloat(llMatch[2]) };
+          return null;
+        };
+
+        // Extract text query from URL
         const extractQuery = (url, fallbackTitle) => {
-          try {
-            const u = new URL(url);
-            // Handle ?query=, ?q=, and also /search/?api=1&query= formats
-            const q = u.searchParams.get('query') || u.searchParams.get('q');
-            if (q) return decodeURIComponent(q).replace(/\+/g, ' ');
-            // Handle /maps/search/?api=1&query=...
-            const match = url.match(/[?&]query=([^&]+)/);
-            if (match) return decodeURIComponent(match[1]).replace(/\+/g, ' ');
-          } catch {}
-          // Fall back to item title + Japan for context
+          if (url) {
+            try {
+              const match = url.match(/[?&]query=([^&]+)/);
+              if (match) return decodeURIComponent(match[1]).replace(/\+/g, ' ');
+              const u = new URL(url);
+              const q = u.searchParams.get('query') || u.searchParams.get('q');
+              if (q) return decodeURIComponent(q).replace(/\+/g, ' ');
+            } catch {}
+          }
           return fallbackTitle ? `${fallbackTitle} Japan` : null;
         };
 
         const positions = [];
         const bounds = new maps.LatLngBounds();
+        const dbg = [];
 
         for (let i = 0; i < mappableItems.length; i++) {
           const it = mappableItems[i];
+
+          // Try direct coordinates first
+          const coords = extractCoords(it.mapUrl);
+          if (coords) {
+            positions.push({ pos: coords, item: it, index: i + 1 });
+            bounds.extend(new maps.LatLng(coords.lat, coords.lng));
+            dbg.push(`✅ ${it.title} — direct coords`);
+            continue;
+          }
+
+          // Try geocoding
           const query = extractQuery(it.mapUrl, it.title);
-          if (!query) continue;
+          if (!query) { dbg.push(`⏭ ${it.title} — skipped (no query)`); continue; }
 
           const result = await new Promise((res) => {
             geocoder.geocode({ address: query, region: 'jp' }, (results, status) => {
               if (status === 'OK' && results?.[0]) res(results[0].geometry.location);
-              else res(null);
+              else { dbg.push(`❌ ${it.title} — geocode failed: ${status}`); res(null); }
             });
           });
 
@@ -1347,8 +1371,11 @@ function DayMapPage({ day, dayIndex, onBack }) {
             const pos = { lat: result.lat(), lng: result.lng() };
             positions.push({ pos, item: it, index: i + 1 });
             bounds.extend(result);
+            dbg.push(`✅ ${it.title} — geocoded`);
           }
         }
+
+        setDebugInfo(dbg);
 
         // Add numbered markers
         positions.forEach(({ pos, item, index }) => {
@@ -1428,6 +1455,14 @@ function DayMapPage({ day, dayIndex, onBack }) {
             <div className="sans text-sm text-center py-3" style={{ color: 'var(--text-soft)' }}>Loading map…</div>
           )}
           <div ref={mapRef} className="map-container" />
+
+          {/* Debug info — remove once pins working */}
+          {debugInfo.length > 0 && (
+            <div className="mt-2 p-3 rounded-xl sans text-xs space-y-1" style={{ background: 'var(--paper)', border: '1px solid var(--card-border)' }}>
+              <div className="font-bold mb-1" style={{ color: 'var(--accent)' }}>Pin status (tap Map to refresh)</div>
+              {debugInfo.map((d, i) => <div key={i} style={{ color: 'var(--text-soft)' }}>{d}</div>)}
+            </div>
+          )}
 
           {/* Numbered list under map */}
           <div className="mt-4 space-y-1">
