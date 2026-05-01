@@ -178,6 +178,35 @@ function useTheme(theme, largeText) {
   }, [theme, largeText]);
 }
 
+// Prevent pinch zoom and double-tap zoom on iOS Safari (ignores user-scalable=no)
+function usePreventZoom() {
+  useEffect(() => {
+    // Block pinch zoom (but not inside the map)
+    const preventPinch = (e) => {
+      if (e.target.closest?.('.map-container')) return;
+      if (e.touches && e.touches.length > 1) e.preventDefault();
+    };
+    // Block double-tap zoom (but not inside the map)
+    let lastTap = 0;
+    const preventDoubleTap = (e) => {
+      if (e.target.closest?.('.map-container')) return;
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        e.preventDefault();
+      }
+      lastTap = now;
+    };
+    document.addEventListener('touchstart', preventPinch, { passive: false });
+    document.addEventListener('touchmove', preventPinch, { passive: false });
+    document.addEventListener('touchstart', preventDoubleTap, { passive: false });
+    return () => {
+      document.removeEventListener('touchstart', preventPinch);
+      document.removeEventListener('touchmove', preventPinch);
+      document.removeEventListener('touchstart', preventDoubleTap);
+    };
+  }, []);
+}
+
 // Read large text preference from localStorage (per-device, not synced)
 function useLargeText() {
   const [largeText, setLargeText] = useState(() => {
@@ -325,6 +354,7 @@ export default function App() {
   const saveTimer = useRef(null);
 
   useTheme(data.theme, largeText);
+  usePreventZoom();
 
   // Honour confirmDelete setting globally — replace window.confirm with no-op when off
   useEffect(() => {
