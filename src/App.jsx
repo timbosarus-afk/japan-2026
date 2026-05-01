@@ -80,6 +80,7 @@ function migrate(data) {
   d.theme = d.theme || 'auto';
   d.predepTasks = d.predepTasks || { tim: [], michelle: [] };
   d.confirmDelete = d.confirmDelete !== undefined ? d.confirmDelete : true;
+  d.dailyEssentials = d.dailyEssentials || [];
 
   // Migrate notes — old: string per person, new: array of cards per person
   const PERSONS = ['shared', 'tim', 'michelle', 'caroline', 'david'];
@@ -219,6 +220,47 @@ function useLargeText() {
   return [largeText, set];
 }
 
+// Theme — per device (localStorage)
+function useLocalTheme() {
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem('japan-2026-theme') || 'auto'; } catch { return 'auto'; }
+  });
+  const set = (v) => {
+    setTheme(v);
+    try { localStorage.setItem('japan-2026-theme', v); } catch {}
+  };
+  return [theme, set];
+}
+
+// Confirm delete — per device (localStorage)
+function useLocalConfirmDelete() {
+  const [confirmDelete, setConfirmDelete] = useState(() => {
+    try { return localStorage.getItem('japan-2026-confirm-delete') !== 'off'; } catch { return true; }
+  });
+  const set = (v) => {
+    setConfirmDelete(v);
+    try { localStorage.setItem('japan-2026-confirm-delete', v ? 'on' : 'off'); } catch {}
+  };
+  return [confirmDelete, set];
+}
+
+// Tab bar order — per device (localStorage)
+const DEFAULT_TAB_BAR = ['overview', 'days', 'travel', 'packing'];
+function useTabBarOrder() {
+  const [order, setOrder] = useState(() => {
+    try {
+      const stored = localStorage.getItem('japan-2026-tabbar');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return DEFAULT_TAB_BAR;
+  });
+  const set = (v) => {
+    setOrder(v);
+    try { localStorage.setItem('japan-2026-tabbar', JSON.stringify(v)); } catch {}
+  };
+  return [order, set];
+}
+
 // Haptic feedback (vibration on supported devices)
 function haptic(pattern = 10) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch {}
@@ -348,24 +390,28 @@ export default function App() {
   const [todayMode, setTodayMode] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [largeText, setLargeText] = useLargeText();
+  const [theme, setTheme] = useLocalTheme();
+  const [confirmDelete, setConfirmDelete] = useLocalConfirmDelete();
+  const [tabBarOrder, setTabBarOrder] = useTabBarOrder();
+  const [moreSheetOpen, setMoreSheetOpen] = useState(false);
   const [dayLinkedBooking, setDayLinkedBooking] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const online = useOnlineStatus();
   const saveTimer = useRef(null);
 
-  useTheme(data.theme, largeText);
+  useTheme(theme, largeText);
   usePreventZoom();
 
   // Honour confirmDelete setting globally — replace window.confirm with no-op when off
   useEffect(() => {
     if (!window.__origConfirm) window.__origConfirm = window.confirm.bind(window);
-    if (data.confirmDelete === false) {
+    if (!confirmDelete) {
       window.confirm = () => true;
     } else {
       window.confirm = window.__origConfirm;
     }
     return () => { window.confirm = window.__origConfirm || window.confirm; };
-  }, [data.confirmDelete]);
+  }, [confirmDelete]);
 
   useEffect(() => {
     (async () => {
@@ -537,27 +583,9 @@ export default function App() {
             </div>
           </div>
         </div>
-        {!todayMode && (
-          <nav className="max-w-2xl mx-auto px-2 overflow-x-auto hide-scroll">
-            <div className="flex gap-1 pb-1.5">
-              {TABS.map(t => (
-                <button
-                  key={t.id}
-                  onClick={() => { setTab(t.id); setActiveDay(null); setActiveItem(null); }}
-                  className="sans px-2.5 py-1 text-[11px] font-semibold rounded-full whitespace-nowrap flex items-center gap-1 transition"
-                  style={tab === t.id
-                    ? { background: 'var(--primary)', color: 'var(--bg)' }
-                    : { color: 'var(--text-soft)', backgroundColor: 'rgba(30, 42, 74, 0.06)' }}
-                >
-                  <t.Icon size={11} /> {t.label}
-                </button>
-              ))}
-            </div>
-          </nav>
-        )}
       </header>
 
-      <main className="max-w-2xl mx-auto px-5 py-6 pb-32 paper-tex">
+      <main className="max-w-2xl mx-auto px-5 py-5 pb-28 paper-tex">
         {!loaded ? (
           <div className="sans text-sm text-center py-12" style={{ color: 'var(--text-soft)' }}>Loading…</div>
         ) : todayMode && todayDay ? (
@@ -604,6 +632,35 @@ export default function App() {
         ) : null}
       </main>
 
+      {/* Bottom tab bar */}
+      {!todayMode && (
+        <BottomTabBar
+          tabs={TABS}
+          tabBarOrder={tabBarOrder}
+          currentTab={tab}
+          onSelect={(id) => { setTab(id); setActiveDay(null); setActiveItem(null); }}
+          onMore={() => setMoreSheetOpen(true)}
+        />
+      )}
+
+      {moreSheetOpen && (
+        <BottomSheet onClose={() => setMoreSheetOpen(false)} title="More">
+          <div className="grid grid-cols-3 gap-3">
+            {TABS.filter(t => !tabBarOrder.includes(t.id)).map(t => (
+              <button
+                key={t.id}
+                onClick={() => { setTab(t.id); setActiveDay(null); setActiveItem(null); setMoreSheetOpen(false); }}
+                className="rounded-xl p-4 flex flex-col items-center gap-2 active:scale-95 transition"
+                style={{ background: tab === t.id ? 'var(--primary)' : 'var(--card)', color: tab === t.id ? 'var(--bg)' : 'var(--text)', border: '1px solid var(--card-border)' }}
+              >
+                <t.Icon size={22} />
+                <span className="sans text-xs font-bold">{t.label}</span>
+              </button>
+            ))}
+          </div>
+        </BottomSheet>
+      )}
+
       {!todayMode && tab === 'overview' && !settingsOpen && (
         <button onClick={() => setQuickAddOpen(true)} className="fab" aria-label="Quick add">
           <Plus size={26} />
@@ -638,10 +695,67 @@ export default function App() {
           data={data}
           largeText={largeText}
           setLargeText={setLargeText}
+          theme={theme}
+          setTheme={setTheme}
+          confirmDelete={confirmDelete}
+          setConfirmDelete={setConfirmDelete}
+          tabBarOrder={tabBarOrder}
+          setTabBarOrder={setTabBarOrder}
           onSave={persist}
           onClose={() => setSettingsOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+/* ========================= BOTTOM TAB BAR ========================= */
+function BottomTabBar({ tabs, tabBarOrder, currentTab, onSelect, onMore }) {
+  const visibleTabs = tabBarOrder.map(id => tabs.find(t => t.id === id)).filter(Boolean);
+  return (
+    <nav className="bottom-tab-bar">
+      <div className="bottom-tab-bar-inner">
+        {visibleTabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => onSelect(t.id)}
+            className={`bottom-tab-btn ${currentTab === t.id ? 'active' : ''}`}
+          >
+            <t.Icon size={20} />
+            <span className="sans">{t.label}</span>
+          </button>
+        ))}
+        <button
+          onClick={onMore}
+          className={`bottom-tab-btn ${!visibleTabs.find(t => t.id === currentTab) ? 'active' : ''}`}
+        >
+          <ListChecks size={20} />
+          <span className="sans">More</span>
+        </button>
+      </div>
+    </nav>
+  );
+}
+
+/* ========================= BOTTOM SHEET ========================= */
+function BottomSheet({ children, onClose, title }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="bottom-sheet-backdrop" onClick={onClose}>
+      <div className="bottom-sheet" onClick={e => e.stopPropagation()}>
+        <div className="bottom-sheet-handle" />
+        {title && (
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold text-lg" style={{ color: 'var(--primary)' }}>{title}</h3>
+            <button onClick={onClose} style={{ color: 'var(--text-soft)' }}><X size={20} /></button>
+          </div>
+        )}
+        {children}
+      </div>
     </div>
   );
 }
@@ -654,11 +768,11 @@ function SyncBadge({ state }) {
 }
 
 /* ========================= SETTINGS PANEL ========================= */
-function SettingsPanel({ data, largeText, setLargeText, onSave, onClose }) {
+function SettingsPanel({ data, largeText, setLargeText, theme, setTheme, confirmDelete, setConfirmDelete, tabBarOrder, setTabBarOrder, onSave, onClose }) {
   const [bagBeingEdited, setBagBeingEdited] = useState(null);
   const [addingBag, setAddingBag] = useState(false);
+  const [newEssential, setNewEssential] = useState('');
 
-  const setTheme = (t) => onSave({ ...data, theme: t });
   const setNap = (nap) => onSave({ ...data, aidenNap: nap });
 
   const saveBag = (bag) => {
@@ -672,9 +786,68 @@ function SettingsPanel({ data, largeText, setLargeText, onSave, onClose }) {
     onSave({ ...data, bags: data.bags.filter(b => b.id !== id) });
   };
 
+  // Daily essentials
+  const essentials = data.dailyEssentials || [];
+  const addEssential = () => {
+    if (!newEssential.trim()) return;
+    onSave({ ...data, dailyEssentials: [...essentials, { id: uid(), text: newEssential.trim() }] });
+    setNewEssential('');
+  };
+  const removeEssential = (id) => {
+    if (!confirm('Remove from daily essentials? (This does not remove from individual days.)')) return;
+    onSave({ ...data, dailyEssentials: essentials.filter(e => e.id !== id) });
+  };
+  const syncEssentialsToAllDays = () => {
+    if (!confirm(`Add ${essentials.length} essential item${essentials.length !== 1 ? 's' : ''} to every day's bag list? Items already on a day won't be duplicated. Items you've added individually will stay.`)) return;
+    const newDays = data.days.map(day => {
+      const existingTexts = new Set([
+        ...(data.dayBagTemplate || []).map(t => t.text.toLowerCase().trim()),
+        ...(day.dayBagExtras || []).map(e => e.text.toLowerCase().trim()),
+      ]);
+      const toAdd = essentials.filter(e => !existingTexts.has(e.text.toLowerCase().trim()));
+      if (toAdd.length === 0) return day;
+      return {
+        ...day,
+        dayBagExtras: [
+          ...(day.dayBagExtras || []),
+          ...toAdd.map(e => ({ id: uid(), text: e.text })),
+        ],
+      };
+    });
+    onSave({ ...data, days: newDays });
+    haptic(20);
+    alert(`Done! Synced to ${data.days.length} days.`);
+  };
+
+  // Tab bar customisation
+  const allTabIds = TABS.map(t => t.id);
+  const inBar = tabBarOrder.filter(id => allTabIds.includes(id));
+  const inMore = allTabIds.filter(id => !inBar.includes(id));
+  const moveToBar = (id) => {
+    if (inBar.length >= 5) {
+      alert('Tab bar is full. Move one out to More first.');
+      return;
+    }
+    setTabBarOrder([...inBar, id]);
+    haptic(10);
+  };
+  const moveToMore = (id) => {
+    setTabBarOrder(inBar.filter(x => x !== id));
+    haptic(10);
+  };
+  const handleTabBarDragEnd = (event) => {
+    const { active: a, over } = event;
+    if (!over || a.id === over.id) return;
+    const oldIdx = inBar.indexOf(a.id);
+    const newIdx = inBar.indexOf(over.id);
+    if (oldIdx < 0 || newIdx < 0) return;
+    setTabBarOrder(arrayMove(inBar, oldIdx, newIdx));
+    haptic(15);
+  };
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto" style={{ backgroundColor: 'var(--bg)' }}>
-      <div className="max-w-2xl mx-auto px-5 py-6">
+      <div className="max-w-2xl mx-auto px-5 py-6 pb-24">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold" style={{ color: 'var(--primary)' }}>Settings</h2>
           <button onClick={onClose} className="p-2 rounded-full" style={{ color: 'var(--text-soft)' }}><X size={20} /></button>
@@ -682,14 +855,54 @@ function SettingsPanel({ data, largeText, setLargeText, onSave, onClose }) {
 
         {/* Theme */}
         <section className="mb-6">
-          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Theme</h3>
+          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Theme (this device only)</h3>
           <div className="grid grid-cols-2 gap-2">
-            <ThemeBtn current={data.theme} value="auto" label="Auto" Icon={Settings} onClick={() => setTheme('auto')} />
-            <ThemeBtn current={data.theme} value="light" label="Light" Icon={Sun} onClick={() => setTheme('light')} />
-            <ThemeBtn current={data.theme} value="dark" label="Dark" Icon={Moon} onClick={() => setTheme('dark')} />
-            <ThemeBtn current={data.theme} value="neon" label="Neon Tokyo" Icon={Sparkles} onClick={() => setTheme('neon')} />
+            <ThemeBtn current={theme} value="auto" label="Auto" Icon={Settings} onClick={() => setTheme('auto')} />
+            <ThemeBtn current={theme} value="light" label="Light" Icon={Sun} onClick={() => setTheme('light')} />
+            <ThemeBtn current={theme} value="dark" label="Dark" Icon={Moon} onClick={() => setTheme('dark')} />
+            <ThemeBtn current={theme} value="neon" label="Neon Tokyo" Icon={Sparkles} onClick={() => setTheme('neon')} />
           </div>
-          <div className="sans text-[11px] mt-2" style={{ color: 'var(--text-soft)' }}>Auto follows your phone's system setting.</div>
+          <div className="sans text-[11px] mt-2" style={{ color: 'var(--text-soft)' }}>Auto follows your phone's system setting. Theme is per device — won't change on others' phones.</div>
+        </section>
+
+        {/* Tab bar customisation */}
+        <section className="mb-6">
+          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Bottom tab bar (this device)</h3>
+          <div className="sans text-[11px] mb-3" style={{ color: 'var(--text-soft)' }}>Drag to reorder. Up to 5 tabs in the bar — the rest go in "More".</div>
+
+          <div className="mb-3">
+            <div className="sans text-[10px] uppercase tracking-wider font-semibold mb-2" style={{ color: 'var(--text-soft)' }}>In tab bar</div>
+            <DndContext collisionDetection={closestCenter} onDragEnd={handleTabBarDragEnd}>
+              <SortableContext items={inBar} strategy={verticalListSortingStrategy}>
+                <div className="space-y-1">
+                  {inBar.map(id => {
+                    const t = TABS.find(x => x.id === id);
+                    if (!t) return null;
+                    return <SortableTabBarRow key={id} tabDef={t} onRemove={() => moveToMore(id)} />;
+                  })}
+                </div>
+              </SortableContext>
+            </DndContext>
+          </div>
+
+          {inMore.length > 0 && (
+            <div>
+              <div className="sans text-[10px] uppercase tracking-wider font-semibold mb-2" style={{ color: 'var(--text-soft)' }}>In More menu</div>
+              <div className="space-y-1">
+                {inMore.map(id => {
+                  const t = TABS.find(x => x.id === id);
+                  if (!t) return null;
+                  return (
+                    <div key={id} className="p-3 rounded-xl flex items-center gap-3" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+                      <t.Icon size={16} style={{ color: 'var(--text-soft)' }} />
+                      <span className="sans font-semibold text-sm flex-1" style={{ color: 'var(--text)' }}>{t.label}</span>
+                      <button onClick={() => moveToBar(id)} className="sans text-xs font-bold px-2 py-1 rounded-full" style={{ background: 'var(--accent)', color: 'var(--bg)' }}>Move to bar</button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Large text */}
@@ -711,8 +924,8 @@ function SettingsPanel({ data, largeText, setLargeText, onSave, onClose }) {
 
         {/* Confirm before deleting */}
         <section className="mb-6">
-          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Safety</h3>
-          <button onClick={() => onSave({ ...data, confirmDelete: !data.confirmDelete })} className="w-full p-3 rounded-xl flex items-center justify-between" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Safety (this device only)</h3>
+          <button onClick={() => setConfirmDelete(!confirmDelete)} className="w-full p-3 rounded-xl flex items-center justify-between" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
             <div className="flex items-center gap-3">
               <AlertCircle size={18} style={{ color: 'var(--accent)' }} />
               <div className="text-left">
@@ -720,10 +933,34 @@ function SettingsPanel({ data, largeText, setLargeText, onSave, onClose }) {
                 <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>Show "Are you sure?" prompts when removing things</div>
               </div>
             </div>
-            <div className={`w-11 h-6 rounded-full transition flex items-center ${data.confirmDelete !== false ? 'justify-end' : 'justify-start'} px-0.5`} style={{ background: data.confirmDelete !== false ? 'var(--accent)' : 'rgba(0,0,0,0.15)' }}>
+            <div className={`w-11 h-6 rounded-full transition flex items-center ${confirmDelete ? 'justify-end' : 'justify-start'} px-0.5`} style={{ background: confirmDelete ? 'var(--accent)' : 'rgba(0,0,0,0.15)' }}>
               <div className="w-5 h-5 rounded-full bg-white" />
             </div>
           </button>
+        </section>
+
+        {/* Daily essentials */}
+        <section className="mb-6">
+          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Daily essentials</h3>
+          <div className="sans text-[11px] mb-3" style={{ color: 'var(--text-soft)' }}>Items you need every day (e.g. nappies, wipes, sun cream). Tap "Sync" to add these to every day's bag list. Items already added or individually added stay untouched.</div>
+          <div className="space-y-1 mb-3">
+            {essentials.map(e => (
+              <div key={e.id} className="p-2 rounded-lg flex items-center gap-3" style={{ background: 'var(--paper)', border: '1px solid var(--card-border)' }}>
+                <span className="sans flex-1 text-sm" style={{ color: 'var(--text)' }}>{e.text}</span>
+                <button onClick={() => removeEssential(e.id)} className="btn-delete" style={{ width: 32, height: 32 }}><Trash2 size={14} /></button>
+              </div>
+            ))}
+            {essentials.length === 0 && <div className="sans text-xs italic text-center py-2" style={{ color: 'var(--text-soft)' }}>No essentials yet.</div>}
+          </div>
+          <div className="flex gap-2 mb-3">
+            <input value={newEssential} onChange={e => setNewEssential(e.target.value)} onKeyDown={e => e.key === 'Enter' && addEssential()} placeholder="Add an essential item…" className="sans flex-1 p-2 rounded-lg border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+            <button onClick={addEssential} className="btn-primary sans px-3 rounded-lg font-bold"><Plus size={14} /></button>
+          </div>
+          {essentials.length > 0 && (
+            <button onClick={syncEssentialsToAllDays} className="w-full btn-accent sans py-3 rounded-xl font-bold flex items-center justify-center gap-2">
+              <ArrowRight size={16} /> Sync to all {data.days.length} days
+            </button>
+          )}
         </section>
 
         {/* Aiden's nap */}
@@ -771,7 +1008,7 @@ function SettingsPanel({ data, largeText, setLargeText, onSave, onClose }) {
                   <div className="sans text-[10px]" style={{ color: 'var(--text-soft)' }}>{bag.owner === 'TM' ? 'Tim & Michelle' : 'Caroline & David'}</div>
                 </div>
                 <button onClick={() => setBagBeingEdited(bag)} className="sans text-[11px] font-semibold" style={{ color: 'var(--accent)' }}>Edit</button>
-                <button onClick={() => deleteBag(bag.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={14} /></button>
+                <button onClick={() => deleteBag(bag.id)} className="btn-delete" style={{ width: 32, height: 32 }}><Trash2 size={14} /></button>
               </div>
             ))}
           </div>
@@ -798,6 +1035,19 @@ function ThemeBtn({ current, value, label, Icon, onClick }) {
       <Icon size={16} />
       <span className="sans text-sm font-bold">{label}</span>
     </button>
+  );
+}
+
+function SortableTabBarRow({ tabDef: t, onRemove }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: t.id });
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.7 : 1, background: 'var(--card)', border: '1px solid var(--card-border)' };
+  return (
+    <div ref={setNodeRef} style={style} className={`p-3 rounded-xl flex items-center gap-3 ${isDragging ? 'sortable-dragging' : ''}`}>
+      <div {...attributes} {...listeners} className="sortable-handle" style={{ color: 'var(--text-soft)', opacity: 0.5 }} aria-label="Drag"><span style={{ fontSize: 16 }}>⋮⋮</span></div>
+      <t.Icon size={16} style={{ color: 'var(--accent)' }} />
+      <span className="sans font-bold text-sm flex-1" style={{ color: 'var(--text)' }}>{t.label}</span>
+      <button onClick={onRemove} className="sans text-xs font-semibold px-2 py-1 rounded-full" style={{ background: 'rgba(192,48,40,0.1)', color: 'var(--accent)' }}>Move to More</button>
+    </div>
   );
 }
 
@@ -1449,7 +1699,7 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
       markers.forEach(m => m.setMap && m.setMap(null));
       if (polyline) polyline.setMap(null);
     };
-  }, [day.id, groupFilter, filteredItems.length]);
+  }, [day.id, groupFilter, filteredItems.length, JSON.stringify(filteredItems.map(i => i.mapUrl + i.title))]);
 
   return (
     <div className="fade-in">
