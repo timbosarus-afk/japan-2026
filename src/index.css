@@ -697,3 +697,13 @@ input, select, textarea { font-family: 'Inter', sans-serif; }
 }
 [data-large-text="on"] .bag-pill-btn { width: 38px; height: 38px; font-size: 22px; }
 .bag-pill-btn:active { transform: scale(0.9); }
+
+/* Prevent double-tap zoom and touch callouts */
+* {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+/* Re-enable normal touch on map */
+.map-container * {
+  touch-action: auto;
+}
