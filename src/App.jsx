@@ -4,8 +4,11 @@ import {
   ChevronLeft, ChevronDown, ChevronRight, ChevronUp, Luggage, FileText, Cloud, CloudOff,
   CheckCircle2, AlertCircle, Clock, Baby, Paperclip, Upload, Calendar, Home, ListChecks,
   BookOpen, Search, Star, Pin, ExternalLink, Lightbulb, Heart, Settings, HelpCircle,
-  ArrowRight, Coins, Type, Moon, Sun, Sparkles, User, Briefcase
+  ArrowRight, Coins, Type, Moon, Sun, Sparkles, User, Briefcase, Map as MapIcon, Minus
 } from 'lucide-react';
+import { DndContext, closestCenter } from '@dnd-kit/core';
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { supabase, TRIP_ID, uploadFile, deleteFile } from './supabase';
 import { TRIP_DATA } from './tripData';
 import { saveCache, loadCache, isOnline } from './offline';
@@ -73,25 +76,56 @@ function migrate(data) {
   d.dayBagTemplate = d.dayBagTemplate || [];
   d.expenses = d.expenses || [];
   d.fxRates = d.fxRates || null;
-  d.shoppingList = d.shoppingList || [];
   d.bags = d.bags && d.bags.length > 0 ? d.bags : DEFAULT_BAGS;
   d.theme = d.theme || 'auto';
   d.predepTasks = d.predepTasks || { tim: [], michelle: [] };
+  d.confirmDelete = d.confirmDelete !== undefined ? d.confirmDelete : true;
 
-  // Migrate notes from string to per-person object
+  // Migrate notes — old: string per person, new: array of cards per person
+  const PERSONS = ['shared', 'tim', 'michelle', 'caroline', 'david'];
+  const newNotes = { shared: [], tim: [], michelle: [], caroline: [], david: [] };
   if (typeof d.notes === 'string') {
-    d.notes = { shared: d.notes, tim: '', michelle: '', caroline: '', david: '' };
-  } else if (!d.notes || typeof d.notes !== 'object') {
-    d.notes = { shared: '', tim: '', michelle: '', caroline: '', david: '' };
-  } else {
-    d.notes = {
-      shared: d.notes.shared || '',
-      tim: d.notes.tim || '',
-      michelle: d.notes.michelle || '',
-      caroline: d.notes.caroline || '',
-      david: d.notes.david || '',
-    };
+    if (d.notes.trim()) newNotes.shared.push({ id: uid(), type: 'note', title: 'Trip notes', body: d.notes, createdAt: Date.now() });
+  } else if (d.notes && typeof d.notes === 'object') {
+    PERSONS.forEach(p => {
+      const v = d.notes[p];
+      if (Array.isArray(v)) {
+        newNotes[p] = v.map(card => ({
+          id: card.id || uid(),
+          type: card.type || 'note',
+          title: card.title || '',
+          body: card.body || '',
+          url: card.url || '',
+          bought: !!card.bought,
+          createdAt: card.createdAt || Date.now(),
+        }));
+      } else if (typeof v === 'string' && v.trim()) {
+        newNotes[p].push({ id: uid(), type: 'note', title: p === 'shared' ? 'Trip notes' : 'Notes', body: v, createdAt: Date.now() });
+      }
+    });
   }
+  // Migrate old shoppingList into shared as shopping cards (only if not already migrated)
+  if (Array.isArray(d.shoppingList) && d.shoppingList.length > 0) {
+    d.shoppingList.forEach(item => {
+      const personKey = (item.person || 'shared').toLowerCase();
+      const target = PERSONS.includes(personKey) ? personKey : 'shared';
+      // Avoid double-migration by checking if a shopping card with same name already exists
+      const existing = newNotes[target].find(c => c.type === 'shopping' && c.title === item.name);
+      if (!existing) {
+        newNotes[target].push({
+          id: item.id || uid(),
+          type: 'shopping',
+          title: item.name || '',
+          body: item.note || '',
+          url: item.url || '',
+          bought: !!item.bought,
+          createdAt: item.createdAt || Date.now(),
+        });
+      }
+    });
+    delete d.shoppingList;
+  }
+  d.notes = newNotes;
 
   d.bookings = (d.bookings || []).map(b => ({ ...b, date: b.date || '', files: b.files || [] }));
   d.days = (d.days || []).map(day => ({
@@ -111,19 +145,26 @@ function migrate(data) {
     })),
   }));
 
-  // Packing T&M — migrate from old single list if needed
+  // Packing T&M — migrate, preserve note + quantity if present
   d.packing = (d.packing || []).map(p => {
     if (typeof p.gotIt === 'undefined' && typeof p.packed === 'undefined') {
-      return { id: p.id, text: p.text, gotIt: !!p.done, packed: !!p.done, owner: 'TM', bagId: p.bagId || '' };
+      return { id: p.id, text: p.text, gotIt: !!p.done, packed: !!p.done, owner: 'TM', bagId: p.bagId || '', note: p.note || '', quantityCurrent: p.quantityCurrent || 0, quantityTotal: p.quantityTotal || 0 };
     }
-    return { ...p, owner: p.owner || 'TM', bagId: p.bagId !== undefined ? p.bagId : '' };
+    return {
+      ...p,
+      owner: p.owner || 'TM',
+      bagId: p.bagId !== undefined ? p.bagId : '',
+      note: p.note || '',
+      quantityCurrent: p.quantityCurrent || 0,
+      quantityTotal: p.quantityTotal || 0,
+    };
   });
-  d.packingCD = (d.packingCD || []).map(p => ({ ...p, owner: 'CD', bagId: p.bagId || '' }));
+  d.packingCD = (d.packingCD || []).map(p => ({ ...p, owner: 'CD', bagId: p.bagId || '', note: p.note || '', quantityCurrent: p.quantityCurrent || 0, quantityTotal: p.quantityTotal || 0 }));
 
   // Merge new packing items from TRIP_DATA that aren't already saved (match by text)
   const existingTexts = new Set(d.packing.map(p => p.text.toLowerCase().trim()));
   const newItems = TRIP_DATA.packing.filter(p => !existingTexts.has(p.text.toLowerCase().trim()));
-  if (newItems.length > 0) d.packing = [...d.packing, ...newItems];
+  if (newItems.length > 0) d.packing = [...d.packing, ...newItems.map(p => ({ ...p, note: '', quantityCurrent: 0, quantityTotal: 0 }))];
 
   return d;
 }
@@ -149,6 +190,122 @@ function useLargeText() {
   return [largeText, set];
 }
 
+// Haptic feedback (vibration on supported devices)
+function haptic(pattern = 10) {
+  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch {}
+}
+
+// Confirm helper that respects user preference
+function useConfirmDelete(data) {
+  return (message = 'Are you sure?') => {
+    if (data?.confirmDelete === false) return true;
+    return window.confirm(message);
+  };
+}
+
+// Online status hook
+function useOnlineStatus() {
+  const [online, setOnline] = useState(() => navigator.onLine);
+  useEffect(() => {
+    const goOnline = () => setOnline(true);
+    const goOffline = () => setOnline(false);
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+    };
+  }, []);
+  return online;
+}
+
+// Left-edge swipe to go back hook
+function useSwipeBack(onBack) {
+  useEffect(() => {
+    if (!onBack) return;
+    let startX = 0, startY = 0, tracking = false;
+    const onStart = (e) => {
+      const t = e.touches[0];
+      if (t.clientX <= 30) { // only trigger from very left edge
+        startX = t.clientX;
+        startY = t.clientY;
+        tracking = true;
+      }
+    };
+    const onMove = (e) => {
+      if (!tracking) return;
+      const t = e.touches[0];
+      const dx = t.clientX - startX;
+      const dy = Math.abs(t.clientY - startY);
+      if (dx > 80 && dy < 60) {
+        tracking = false;
+        haptic(15);
+        onBack();
+      }
+    };
+    const onEnd = () => { tracking = false; };
+    document.addEventListener('touchstart', onStart, { passive: true });
+    document.addEventListener('touchmove', onMove, { passive: true });
+    document.addEventListener('touchend', onEnd, { passive: true });
+    return () => {
+      document.removeEventListener('touchstart', onStart);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onEnd);
+    };
+  }, [onBack]);
+}
+
+// Pull to refresh hook
+function usePullToRefresh(onRefresh) {
+  useEffect(() => {
+    if (!onRefresh) return;
+    let startY = 0, pulling = false;
+    const onStart = (e) => {
+      if (window.scrollY > 0) return;
+      startY = e.touches[0].clientY;
+      pulling = true;
+    };
+    const onMove = (e) => {
+      if (!pulling) return;
+      const dy = e.touches[0].clientY - startY;
+      if (dy > 80) {
+        pulling = false;
+        haptic(20);
+        onRefresh();
+      }
+    };
+    const onEnd = () => { pulling = false; };
+    document.addEventListener('touchstart', onStart, { passive: true });
+    document.addEventListener('touchmove', onMove, { passive: true });
+    document.addEventListener('touchend', onEnd, { passive: true });
+    return () => {
+      document.removeEventListener('touchstart', onStart);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onEnd);
+    };
+  }, [onRefresh]);
+}
+
+// Google Maps loader
+let _mapsLoadPromise = null;
+function loadGoogleMaps() {
+  if (_mapsLoadPromise) return _mapsLoadPromise;
+  const key = import.meta.env.VITE_GOOGLE_MAPS_KEY;
+  if (!key) return Promise.reject(new Error('Maps API key not configured'));
+  if (window.google?.maps) return Promise.resolve(window.google.maps);
+  _mapsLoadPromise = new Promise((resolve, reject) => {
+    const cb = '__gmaps_init_' + Math.random().toString(36).slice(2, 8);
+    window[cb] = () => { resolve(window.google.maps); delete window[cb]; };
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&callback=${cb}&v=weekly`;
+    s.async = true;
+    s.defer = true;
+    s.onerror = () => reject(new Error('Failed to load Google Maps'));
+    document.head.appendChild(s);
+  });
+  return _mapsLoadPromise;
+}
+
 export default function App() {
   const [data, setData] = useState(TRIP_DATA);
   const [loaded, setLoaded] = useState(false);
@@ -163,9 +320,22 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [largeText, setLargeText] = useLargeText();
   const [dayLinkedBooking, setDayLinkedBooking] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const online = useOnlineStatus();
   const saveTimer = useRef(null);
 
   useTheme(data.theme, largeText);
+
+  // Honour confirmDelete setting globally — replace window.confirm with no-op when off
+  useEffect(() => {
+    if (!window.__origConfirm) window.__origConfirm = window.confirm.bind(window);
+    if (data.confirmDelete === false) {
+      window.confirm = () => true;
+    } else {
+      window.confirm = window.__origConfirm;
+    }
+    return () => { window.confirm = window.__origConfirm || window.confirm; };
+  }, [data.confirmDelete]);
 
   useEffect(() => {
     (async () => {
@@ -283,9 +453,40 @@ export default function App() {
   // Scroll to top on every navigation
   useEffect(() => { window.scrollTo(0, 0); }, [tab, activeDay, activeItem]);
 
+  // Compute back action: prefers item -> day -> tab change
+  const goBack = useMemo(() => {
+    if (settingsOpen) return () => setSettingsOpen(false);
+    if (searchOpen) return () => setSearchOpen(false);
+    if (quickAddOpen) return () => setQuickAddOpen(false);
+    if (todayMode) return () => setTodayMode(false);
+    if (tab === 'days' && activeItem) return () => setActiveItem(null);
+    if (tab === 'days' && activeDay) return () => setActiveDay(null);
+    return null;
+  }, [settingsOpen, searchOpen, quickAddOpen, todayMode, tab, activeItem, activeDay]);
+
+  useSwipeBack(goBack);
+
+  // Pull to refresh — re-fetch from Supabase
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const { data: row } = await supabase.from('trips').select('data').eq('id', TRIP_ID).maybeSingle();
+      if (row?.data) {
+        const migrated = migrate(row.data);
+        setData(migrated);
+        saveCache(migrated);
+      }
+    } catch {}
+    setTimeout(() => setRefreshing(false), 600);
+  };
+  usePullToRefresh(refresh);
+
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--bg)' }}>
-      <header className="sticky top-0 z-30" style={{ backgroundColor: 'var(--bg)', borderBottom: '2px solid var(--card-border)' }}>
+      {!online && <div className="offline-banner sans">Offline — changes will sync when connected</div>}
+      {refreshing && <div className="refresh-indicator sans">Refreshing…</div>}
+      <header className="sticky top-0 z-30" style={{ backgroundColor: 'var(--bg)', borderBottom: '2px solid var(--card-border)', marginTop: !online ? 28 : 0 }}>
         <div className="max-w-2xl mx-auto px-5 pt-4 pb-2">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
@@ -469,11 +670,28 @@ function SettingsPanel({ data, largeText, setLargeText, onSave, onClose }) {
             <div className="flex items-center gap-3">
               <Type size={18} style={{ color: 'var(--accent)' }} />
               <div className="text-left">
-                <div className="sans font-bold text-sm" style={{ color: 'var(--text)' }}>Large text</div>
-                <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>Bigger fonts everywhere</div>
+                <div className="sans font-bold text-sm" style={{ color: 'var(--text)' }}>Extra large text</div>
+                <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>Even bigger fonts everywhere</div>
               </div>
             </div>
             <div className={`w-11 h-6 rounded-full transition flex items-center ${largeText ? 'justify-end' : 'justify-start'} px-0.5`} style={{ background: largeText ? 'var(--accent)' : 'rgba(0,0,0,0.15)' }}>
+              <div className="w-5 h-5 rounded-full bg-white" />
+            </div>
+          </button>
+        </section>
+
+        {/* Confirm before deleting */}
+        <section className="mb-6">
+          <h3 className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>Safety</h3>
+          <button onClick={() => onSave({ ...data, confirmDelete: !data.confirmDelete })} className="w-full p-3 rounded-xl flex items-center justify-between" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+            <div className="flex items-center gap-3">
+              <AlertCircle size={18} style={{ color: 'var(--accent)' }} />
+              <div className="text-left">
+                <div className="sans font-bold text-sm" style={{ color: 'var(--text)' }}>Confirm before deleting</div>
+                <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>Show "Are you sure?" prompts when removing things</div>
+              </div>
+            </div>
+            <div className={`w-11 h-6 rounded-full transition flex items-center ${data.confirmDelete !== false ? 'justify-end' : 'justify-start'} px-0.5`} style={{ background: data.confirmDelete !== false ? 'var(--accent)' : 'rgba(0,0,0,0.15)' }}>
               <div className="w-5 h-5 rounded-full bg-white" />
             </div>
           </button>
@@ -710,15 +928,34 @@ function PreDepartureSection({ data, onSave }) {
     onSave({ ...data, predepTasks: { ...tasks, [active]: newList } });
   };
 
-  const toggle = (id) => updateTasks(list.map(t => t.id === id ? { ...t, done: !t.done } : t));
+  const toggle = (id) => {
+    haptic(8);
+    updateTasks(list.map(t => t.id === id ? { ...t, done: !t.done } : t));
+  };
   const add = () => {
     if (!newTask.trim()) return;
     updateTasks([...list, { id: uid(), text: newTask.trim(), done: false }]);
     setNewTask('');
   };
-  const remove = (id) => updateTasks(list.filter(t => t.id !== id));
+  const remove = (id) => {
+    if (!confirm('Delete this task?')) return;
+    haptic(20);
+    updateTasks(list.filter(t => t.id !== id));
+  };
+
+  const handleDragEnd = (event) => {
+    const { active: a, over } = event;
+    if (!over || a.id === over.id) return;
+    const oldIndex = list.findIndex(t => t.id === a.id);
+    const newIndex = list.findIndex(t => t.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    updateTasks(arrayMove(list, oldIndex, newIndex));
+    haptic(15);
+  };
 
   if (tripStarted && totalRemaining === 0) return null;
+
+  const sorted = [...list].sort((a, b) => (a.done === b.done ? 0 : a.done ? 1 : -1));
 
   return (
     <div className="predep-card">
@@ -737,24 +974,37 @@ function PreDepartureSection({ data, onSave }) {
             <button onClick={() => setActive('tim')} className={`couple-tab ${active === 'tim' ? 'active' : ''}`}>Tim's tasks</button>
             <button onClick={() => setActive('michelle')} className={`couple-tab ${active === 'michelle' ? 'active' : ''}`}>Michelle's tasks</button>
           </div>
-          <div className="space-y-1">
-            {list.length === 0 && <div className="sans text-xs italic text-center py-3" style={{ color: 'var(--text-soft)' }}>No tasks yet — add one below.</div>}
-            {[...list].sort((a, b) => (a.done === b.done ? 0 : a.done ? 1 : -1)).map(t => (
-              <div key={t.id} className="flex items-center gap-3 py-1.5">
-                <button onClick={() => toggle(t.id)} className={`tickbox ${t.done ? 'on' : ''}`}>
-                  {t.done && <CheckCircle2 size={13} />}
-                </button>
-                <span className="flex-1 sans text-sm" style={{ color: 'var(--text)', opacity: t.done ? 0.5 : 1 }}>{t.text}</span>
-                <button onClick={() => remove(t.id)} style={{ color: 'var(--text-soft)' }}><X size={14} /></button>
+          {sorted.length === 0 && <div className="sans text-xs italic text-center py-3" style={{ color: 'var(--text-soft)' }}>No tasks yet — add one below.</div>}
+          <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={sorted.map(t => t.id)} strategy={verticalListSortingStrategy}>
+              <div>
+                {sorted.map(t => (
+                  <SortableTaskRow key={t.id} task={t} onToggle={() => toggle(t.id)} onRemove={() => remove(t.id)} />
+                ))}
               </div>
-            ))}
-          </div>
+            </SortableContext>
+          </DndContext>
           <div className="flex gap-2 mt-3">
             <input value={newTask} onChange={e => setNewTask(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} placeholder={`Add task for ${active === 'tim' ? 'Tim' : 'Michelle'}…`} className="sans flex-1 p-2 rounded-lg border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
             <button onClick={add} className="btn-primary sans px-3 rounded-lg font-bold"><Plus size={14} /></button>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function SortableTaskRow({ task: t, onToggle, onRemove }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: t.id });
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.7 : 1 };
+  return (
+    <div ref={setNodeRef} style={style} className={`flex items-center gap-3 py-1.5 ${isDragging ? 'sortable-dragging' : ''}`}>
+      <button onClick={onToggle} className={`tickbox ${t.done ? 'on' : ''}`}>
+        {t.done && <CheckCircle2 size={13} />}
+      </button>
+      <div {...attributes} {...listeners} className="sortable-handle" style={{ color: 'var(--text-soft)', opacity: 0.4 }} aria-label="Drag"><span style={{ fontSize: 12 }}>⋮⋮</span></div>
+      <span className="flex-1 sans text-sm" style={{ color: 'var(--text)', opacity: t.done ? 0.5 : 1 }}>{t.text}</span>
+      <button onClick={onRemove} className="btn-delete" style={{ width: 30, height: 30 }}><Trash2 size={14} /></button>
     </div>
   );
 }
@@ -823,6 +1073,7 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
   const day = data.days.find(d => d.id === dayId);
   const [groupFilter, setGroupFilter] = useState({ tm: false, cd: false }); // both unselected = show all
   const [expandedTime, setExpandedTime] = useState(null); // item id of the expanded times-bar pill
+  const [mapOpen, setMapOpen] = useState(false);
   if (!day) return null;
 
   const aidenStatus = data.aidenStatus[day.date];
@@ -864,17 +1115,28 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
     .filter(i => allFiltered.includes(i))
     .sort((a, b) => a.time.localeCompare(b.time));
 
+  if (mapOpen) {
+    return <DayMapPage day={day} dayIndex={dayIndex} onBack={() => setMapOpen(false)} />;
+  }
+
   return (
     <div className="fade-in">
       <button onClick={onBack} className="sans flex items-center gap-1 text-xs mb-4 font-semibold" style={{ color: 'var(--accent)' }}>
         <ChevronLeft size={14} /> All days
       </button>
-      <div className="sans text-[10px] uppercase tracking-[0.2em] font-semibold flex items-center gap-2" style={{ color: 'var(--accent)' }}>
-        Day {dayIndex + 1} · {fmtDateLong(day.date)}
-        {isToday && <span className="today-badge sans">Today</span>}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="sans text-[10px] uppercase tracking-[0.2em] font-semibold flex items-center gap-2" style={{ color: 'var(--accent)' }}>
+            Day {dayIndex + 1} · {fmtDateLong(day.date)}
+            {isToday && <span className="today-badge sans">Today</span>}
+          </div>
+          <h2 className="text-3xl font-bold leading-tight mt-1" style={{ color: 'var(--primary)' }}>{day.title}</h2>
+          {day.titleJp && <div className="jp text-sm mt-1" style={{ color: 'var(--text-soft)' }}>{day.titleJp}</div>}
+        </div>
+        <button onClick={() => setMapOpen(true)} className="sans flex-shrink-0 px-3 py-2 rounded-full text-xs font-bold flex items-center gap-1.5" style={{ background: 'var(--accent)', color: 'var(--bg)' }} aria-label="View map">
+          <MapIcon size={14} /> Map
+        </button>
       </div>
-      <h2 className="text-3xl font-bold leading-tight mt-1" style={{ color: 'var(--primary)' }}>{day.title}</h2>
-      {day.titleJp && <div className="jp text-sm mt-1" style={{ color: 'var(--text-soft)' }}>{day.titleJp}</div>}
 
       <div className="flex flex-wrap gap-2 mt-2">
         <AidenBadge status={aidenStatus} />
@@ -1009,6 +1271,184 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
         updateDay(updated);
       }} />
       <DayRatingDiary day={day} onUpdateDay={updateDay} />
+    </div>
+  );
+}
+
+/* ========================= DAY MAP PAGE ========================= */
+function DayMapPage({ day, dayIndex, onBack }) {
+  const mapRef = useRef(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedItem, setSelectedItem] = useState(null);
+
+  // Extract items with mapUrl that we can geocode
+  const mappableItems = useMemo(() => {
+    return (day.items || []).filter(it => it.mapUrl && /maps/.test(it.mapUrl));
+  }, [day.items]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let map, geocoder, markers = [], polyline;
+
+    (async () => {
+      try {
+        const maps = await loadGoogleMaps();
+        if (cancelled) return;
+        if (!mapRef.current) return;
+
+        // Default centre roughly Tokyo
+        map = new maps.Map(mapRef.current, {
+          center: { lat: 35.68, lng: 139.76 },
+          zoom: 11,
+          disableDefaultUI: false,
+          zoomControl: true,
+          mapTypeControl: false,
+          streetViewControl: false,
+          fullscreenControl: false,
+        });
+
+        geocoder = new maps.Geocoder();
+
+        // Extract a query string from a maps URL (matches our app's pattern)
+        const extractQuery = (url) => {
+          try {
+            const u = new URL(url);
+            const q = u.searchParams.get('query') || u.searchParams.get('q');
+            if (q) return decodeURIComponent(q);
+          } catch {}
+          return null;
+        };
+
+        const positions = [];
+        const bounds = new maps.LatLngBounds();
+
+        for (let i = 0; i < mappableItems.length; i++) {
+          const it = mappableItems[i];
+          const query = extractQuery(it.mapUrl);
+          if (!query) continue;
+
+          const result = await new Promise((res) => {
+            geocoder.geocode({ address: query, region: 'jp' }, (results, status) => {
+              if (status === 'OK' && results?.[0]) res(results[0].geometry.location);
+              else res(null);
+            });
+          });
+
+          if (cancelled) return;
+
+          if (result) {
+            const pos = { lat: result.lat(), lng: result.lng() };
+            positions.push({ pos, item: it, index: i + 1 });
+            bounds.extend(result);
+          }
+        }
+
+        // Add numbered markers
+        positions.forEach(({ pos, item, index }) => {
+          const marker = new maps.Marker({
+            position: pos,
+            map,
+            label: { text: String(index), color: '#fff', fontSize: '12px', fontWeight: 'bold' },
+            icon: {
+              path: maps.SymbolPath.CIRCLE,
+              scale: 14,
+              fillColor: '#c03028',
+              fillOpacity: 1,
+              strokeColor: '#fff',
+              strokeWeight: 2,
+            },
+            title: item.title,
+          });
+          marker.addListener('click', () => setSelectedItem(item));
+          markers.push(marker);
+        });
+
+        // Draw polyline connecting them in order
+        if (positions.length > 1) {
+          polyline = new maps.Polyline({
+            path: positions.map(p => p.pos),
+            geodesic: true,
+            strokeColor: '#1e2a4a',
+            strokeOpacity: 0.7,
+            strokeWeight: 3,
+            map,
+          });
+        }
+
+        // Fit map to bounds
+        if (positions.length > 0) {
+          map.fitBounds(bounds, 60);
+          // Cap zoom for single point
+          if (positions.length === 1) map.setZoom(15);
+        }
+
+        setLoading(false);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e.message || 'Failed to load map');
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      markers.forEach(m => m.setMap?.(null));
+      if (polyline) polyline.setMap(null);
+    };
+  }, [day.id, mappableItems]);
+
+  return (
+    <div className="fade-in">
+      <button onClick={onBack} className="sans flex items-center gap-1 text-xs mb-4 font-semibold" style={{ color: 'var(--accent)' }}>
+        <ChevronLeft size={14} /> Back to {day.title}
+      </button>
+      <div className="sans text-[10px] uppercase tracking-[0.2em] font-semibold mb-1" style={{ color: 'var(--accent)' }}>
+        Day {dayIndex + 1} · {fmtDate(day.date)}
+      </div>
+      <h2 className="text-2xl font-bold mb-3" style={{ color: 'var(--primary)' }}>{day.title} — Map view</h2>
+
+      {error ? (
+        <div className="bg-white rounded-xl p-6 card-shadow text-center sans" style={{ color: 'var(--text-soft)' }}>
+          <AlertCircle size={32} className="mx-auto mb-3" style={{ color: 'var(--accent)' }} />
+          <div className="font-bold text-base" style={{ color: 'var(--primary)' }}>Map unavailable</div>
+          <div className="text-sm mt-2">{error}</div>
+          <div className="text-xs mt-4 italic">Check Vercel env var <strong>VITE_GOOGLE_MAPS_KEY</strong> is set, then redeploy.</div>
+        </div>
+      ) : (
+        <>
+          {loading && (
+            <div className="sans text-sm text-center py-3" style={{ color: 'var(--text-soft)' }}>Loading map…</div>
+          )}
+          <div ref={mapRef} className="map-container" />
+
+          {/* Numbered list under map */}
+          <div className="mt-4 space-y-1">
+            {mappableItems.map((it, i) => {
+              const Icon = ICONS[it.type] || MapPin;
+              return (
+                <div key={it.id} className="bg-white rounded-lg p-3 card-shadow flex items-center gap-3" style={selectedItem?.id === it.id ? { borderLeft: '3px solid var(--accent)' } : {}}>
+                  <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center sans font-bold text-xs" style={{ background: 'var(--accent)', color: 'var(--bg)' }}>{i + 1}</div>
+                  <Icon size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{it.title}</div>
+                    {it.time && <div className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{it.time}</div>}
+                  </div>
+                  <a href={it.mapUrl} target="_blank" rel="noreferrer" className="sans text-xs font-semibold" style={{ color: 'var(--accent)' }}>
+                    Open
+                  </a>
+                </div>
+              );
+            })}
+            {mappableItems.length === 0 && (
+              <div className="bg-white rounded-xl p-6 card-shadow text-center sans" style={{ color: 'var(--text-soft)' }}>
+                No mappable items on this day. Items need a Google Maps link to appear on the map.
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1692,6 +2132,17 @@ function BookingsTab({ data, onSave, initialBookingId, onClearInitial }) {
     );
   }
 
+  const handleDragEnd = (event) => {
+    const { active: a, over } = event;
+    if (!over || a.id === over.id) return;
+    const list = data.bookings || [];
+    const oldIndex = list.findIndex(b => b.id === a.id);
+    const newIndex = list.findIndex(b => b.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    onSave({ ...data, bookings: arrayMove(list, oldIndex, newIndex) });
+    haptic(15);
+  };
+
   return (
     <div className="fade-in">
       <div className="flex items-center justify-between mb-3">
@@ -1706,49 +2157,67 @@ function BookingsTab({ data, onSave, initialBookingId, onClearInitial }) {
         ><Plus size={10} /> Add</button>
       </div>
 
-      <div className="space-y-2">
-        {sorted.map(b => {
-          const isDone = b.status === 'done';
-          return (
-            <button
-              key={b.id}
-              onClick={() => setActiveBooking(b.id)}
-              className="w-full text-left rounded-xl p-3 card-shadow flex items-start gap-3 active:scale-[0.99] transition"
-              style={{
-                background: isDone ? 'var(--card)' : 'var(--bg)',
-                opacity: isDone ? 1 : 0.6,
-                border: isDone ? 'none' : '1px solid var(--card-border)',
-              }}
-            >
-              <button
-                onClick={(e) => toggleDone(e, b)}
-                className={`tickbox mt-0.5 flex-shrink-0 ${isDone ? 'on' : ''}`}
-              >
-                {isDone && <CheckCircle2 size={14} />}
-              </button>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="sans font-bold text-sm" style={{ color: isDone ? 'var(--primary)' : 'var(--text-soft)' }}>{b.title || 'Untitled'}</div>
-                  <StatusChip status={isDone ? 'done' : b.status} />
-                </div>
-                {b.detail && <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{b.detail}</div>}
-                <div className="flex items-center gap-3 sans text-[10px] mt-1" style={{ color: 'var(--text-soft)' }}>
-                  {b.date && <span>For: {fmtDate(b.date)}</span>}
-                </div>
-                {b.files?.length > 0 && (
-                  <div className="sans text-[10px] mt-1 flex items-center gap-1" style={{ color: 'var(--text-soft)' }}>
-                    <Paperclip size={10} /> {b.files.length} file{b.files.length > 1 ? 's' : ''}
-                  </div>
-                )}
-              </div>
-              <ChevronRight size={16} style={{ color: 'var(--text-soft)' }} />
-            </button>
-          );
-        })}
-        {sorted.length === 0 && (
-          <div className="sans text-sm text-center py-8 italic" style={{ color: 'var(--text-soft)' }}>No bookings yet.</div>
+      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={sorted.map(b => b.id)} strategy={verticalListSortingStrategy}>
+          <div className="space-y-2">
+            {sorted.map(b => (
+              <SortableBookingRow
+                key={b.id}
+                booking={b}
+                onOpen={() => setActiveBooking(b.id)}
+                onToggleDone={(e) => toggleDone(e, b)}
+              />
+            ))}
+            {sorted.length === 0 && (
+              <div className="sans text-sm text-center py-8 italic" style={{ color: 'var(--text-soft)' }}>No bookings yet.</div>
+            )}
+          </div>
+        </SortableContext>
+      </DndContext>
+    </div>
+  );
+}
+
+function SortableBookingRow({ booking, onOpen, onToggleDone }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: booking.id });
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.7 : 1 };
+  const isDone = booking.status === 'done';
+  const b = booking;
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        ...style,
+        background: isDone ? 'var(--card)' : 'var(--bg)',
+        opacity: isDragging ? 0.7 : (isDone ? 1 : 0.6),
+        border: isDone ? 'none' : '1px solid var(--card-border)',
+      }}
+      className={`w-full text-left rounded-xl p-3 card-shadow flex items-start gap-3 ${isDragging ? 'sortable-dragging' : ''}`}
+      onClick={(e) => {
+        if (e.target.closest('button')) return;
+        onOpen();
+      }}
+    >
+      <button onClick={(e) => { e.stopPropagation(); onToggleDone(e); }} className={`tickbox mt-0.5 flex-shrink-0 ${isDone ? 'on' : ''}`}>
+        {isDone && <CheckCircle2 size={14} />}
+      </button>
+      <div {...attributes} {...listeners} className="sortable-handle mt-1" style={{ color: 'var(--text-soft)', opacity: 0.4 }} aria-label="Drag"><span style={{ fontSize: 14 }}>⋮⋮</span></div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="sans font-bold text-sm" style={{ color: isDone ? 'var(--primary)' : 'var(--text-soft)' }}>{b.title || 'Untitled'}</div>
+          <StatusChip status={isDone ? 'done' : b.status} />
+        </div>
+        {b.detail && <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{b.detail}</div>}
+        <div className="flex items-center gap-3 sans text-[10px] mt-1" style={{ color: 'var(--text-soft)' }}>
+          {b.date && <span>For: {fmtDate(b.date)}</span>}
+        </div>
+        {b.files?.length > 0 && (
+          <div className="sans text-[10px] mt-1 flex items-center gap-1" style={{ color: 'var(--text-soft)' }}>
+            <Paperclip size={10} /> {b.files.length} file{b.files.length > 1 ? 's' : ''}
+          </div>
         )}
       </div>
+      <ChevronRight size={16} style={{ color: 'var(--text-soft)' }} />
     </div>
   );
 }
@@ -2010,6 +2479,7 @@ function DocsTab({ data, onSave }) {
   };
   const remove = (id) => {
     if (!confirm('Delete?')) return;
+    haptic(20);
     onSave({ ...data, documents: data.documents.filter(d => d.id !== id) });
   };
   const handleUpload = async (doc, e) => {
@@ -2025,6 +2495,16 @@ function DocsTab({ data, onSave }) {
     try { await deleteFile(file.path); } catch {}
     save({ ...doc, files: doc.files.filter(f => f.path !== file.path) });
   };
+  const handleDragEnd = (event) => {
+    const { active: a, over } = event;
+    if (!over || a.id === over.id) return;
+    const list = data.documents || [];
+    const oldIndex = list.findIndex(d => d.id === a.id);
+    const newIndex = list.findIndex(d => d.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    onSave({ ...data, documents: arrayMove(list, oldIndex, newIndex) });
+    haptic(15);
+  };
 
   return (
     <div className="fade-in">
@@ -2032,27 +2512,40 @@ function DocsTab({ data, onSave }) {
         <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Documents</h2>
         <button onClick={() => setEditing({ id: uid(), title: '', detail: '', ref: '', files: [] })} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
       </div>
-      <div className="space-y-2">
-        {(data.documents || []).map(d => (
-          <div key={d.id} className="bg-white rounded-xl p-3 card-shadow">
-            <div className="flex items-start gap-2">
-              <div className="flex-1 min-w-0">
-                <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{d.title}</div>
-                <div className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{d.detail}</div>
-                {d.ref && d.ref !== 'TBD' && <div className="sans text-xs mt-1">Ref: <strong style={{ color: 'var(--primary)' }}>{d.ref}</strong></div>}
-                <FileList files={d.files} onRemove={(f) => removeFile(d, f)} />
-              </div>
-              <label className="cursor-pointer p-2" style={{ color: 'var(--accent)' }}>
-                <Upload size={14} />
-                <input type="file" className="hidden" onChange={(e) => handleUpload(d, e)} />
-              </label>
-              <button onClick={() => setEditing(d)} style={{ color: 'var(--accent)' }}><Edit3 size={13} /></button>
-              <button onClick={() => remove(d.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={13} /></button>
-            </div>
+      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={(data.documents || []).map(d => d.id)} strategy={verticalListSortingStrategy}>
+          <div className="space-y-2">
+            {(data.documents || []).map(d => (
+              <SortableDocRow key={d.id} doc={d} onEdit={() => setEditing(d)} onRemove={() => remove(d.id)} onUpload={(e) => handleUpload(d, e)} onRemoveFile={(f) => removeFile(d, f)} />
+            ))}
           </div>
-        ))}
-      </div>
+        </SortableContext>
+      </DndContext>
       {editing && <DocForm doc={editing} onSave={save} onClose={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+function SortableDocRow({ doc: d, onEdit, onRemove, onUpload, onRemoveFile }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: d.id });
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.7 : 1 };
+  return (
+    <div ref={setNodeRef} style={style} className={`bg-white rounded-xl p-3 card-shadow ${isDragging ? 'sortable-dragging' : ''}`}>
+      <div className="flex items-start gap-2">
+        <div {...attributes} {...listeners} className="sortable-handle mt-1" style={{ color: 'var(--text-soft)', opacity: 0.4 }} aria-label="Drag"><span style={{ fontSize: 14 }}>⋮⋮</span></div>
+        <div className="flex-1 min-w-0">
+          <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{d.title}</div>
+          <div className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{d.detail}</div>
+          {d.ref && d.ref !== 'TBD' && <div className="sans text-xs mt-1">Ref: <strong style={{ color: 'var(--primary)' }}>{d.ref}</strong></div>}
+          <FileList files={d.files} onRemove={onRemoveFile} />
+        </div>
+        <label className="cursor-pointer p-2" style={{ color: 'var(--accent)' }}>
+          <Upload size={16} />
+          <input type="file" className="hidden" onChange={onUpload} />
+        </label>
+        <button onClick={onEdit} style={{ color: 'var(--accent)' }} className="p-2"><Edit3 size={16} /></button>
+        <button onClick={onRemove} className="btn-delete"><Trash2 size={16} /></button>
+      </div>
     </div>
   );
 }
@@ -2080,7 +2573,18 @@ function ContactsTab({ data, onSave }) {
   };
   const remove = (id) => {
     if (!confirm('Delete?')) return;
+    haptic(20);
     onSave({ ...data, contacts: data.contacts.filter(c => c.id !== id) });
+  };
+  const handleDragEnd = (event) => {
+    const { active: a, over } = event;
+    if (!over || a.id === over.id) return;
+    const list = data.contacts || [];
+    const oldIndex = list.findIndex(c => c.id === a.id);
+    const newIndex = list.findIndex(c => c.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    onSave({ ...data, contacts: arrayMove(list, oldIndex, newIndex) });
+    haptic(15);
   };
   return (
     <div className="fade-in">
@@ -2088,20 +2592,33 @@ function ContactsTab({ data, onSave }) {
         <h2 className="sans text-[10px] uppercase tracking-[0.25em] font-bold" style={{ color: 'var(--accent)' }}>Contacts</h2>
         <button onClick={() => setEditing({ id: uid(), name: '', phone: '' })} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
       </div>
-      <div className="space-y-2">
-        {(data.contacts || []).map(c => (
-          <div key={c.id} className="bg-white rounded-xl p-3 card-shadow flex items-center gap-3">
-            <Phone size={16} style={{ color: 'var(--accent)' }} />
-            <div className="flex-1">
-              <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{c.name}</div>
-              <a href={`tel:${c.phone}`} className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{c.phone}</a>
-            </div>
-            <button onClick={() => setEditing(c)} style={{ color: 'var(--accent)' }}><Edit3 size={13} /></button>
-            <button onClick={() => remove(c.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={13} /></button>
+      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={(data.contacts || []).map(c => c.id)} strategy={verticalListSortingStrategy}>
+          <div className="space-y-2">
+            {(data.contacts || []).map(c => (
+              <SortableContactRow key={c.id} contact={c} onEdit={() => setEditing(c)} onRemove={() => remove(c.id)} />
+            ))}
           </div>
-        ))}
-      </div>
+        </SortableContext>
+      </DndContext>
       {editing && <ContactForm contact={editing} onSave={save} onClose={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+function SortableContactRow({ contact, onEdit, onRemove }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: contact.id });
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.7 : 1 };
+  return (
+    <div ref={setNodeRef} style={style} className={`bg-white rounded-xl p-3 card-shadow flex items-center gap-3 ${isDragging ? 'sortable-dragging' : ''}`}>
+      <div {...attributes} {...listeners} className="sortable-handle" style={{ color: 'var(--text-soft)', opacity: 0.4 }} aria-label="Drag"><span style={{ fontSize: 14 }}>⋮⋮</span></div>
+      <Phone size={16} style={{ color: 'var(--accent)' }} />
+      <div className="flex-1">
+        <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{contact.name}</div>
+        <a href={`tel:${contact.phone}`} className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{contact.phone}</a>
+      </div>
+      <button onClick={onEdit} style={{ color: 'var(--accent)' }}><Edit3 size={14} /></button>
+      <button onClick={onRemove} className="btn-delete"><Trash2 size={16} /></button>
     </div>
   );
 }
@@ -2119,6 +2636,7 @@ function ContactForm({ contact, onSave, onClose }) {
 
 /* ========================= PACKING (rewrite — couple tabs + bag sections) ========================= */
 function PackingTab({ data, onSave }) {
+  const confirmDelete = useConfirmDelete(data);
   const [activeCouple, setActiveCouple] = useState('TM'); // TM | CD
   const [filter, setFilter] = useState('all'); // all | need | got | full
   const [collapsed, setCollapsed] = useState({}); // bagId -> bool
@@ -2126,6 +2644,7 @@ function PackingTab({ data, onSave }) {
   const [adding, setAdding] = useState(false);
   const [newText, setNewText] = useState('');
   const [newBagId, setNewBagId] = useState('');
+  const [detailItem, setDetailItem] = useState(null);
 
   const list = activeCouple === 'TM' ? (data.packing || []) : (data.packingCD || []);
   const bags = (data.bags || []).filter(b => b.owner === activeCouple);
@@ -2143,12 +2662,30 @@ function PackingTab({ data, onSave }) {
 
   const toggleGot = (id) => updateList(list.map(p => p.id === id ? { ...p, gotIt: !p.gotIt, packed: !p.gotIt ? p.packed : false } : p));
   const togglePacked = (id) => updateList(list.map(p => p.id === id ? { ...p, packed: !p.packed } : p));
-  const remove = (id) => updateList(list.filter(p => p.id !== id));
+  const remove = (id) => {
+    if (!confirmDelete('Delete this item?')) return;
+    haptic(20);
+    updateList(list.filter(p => p.id !== id));
+  };
   const moveBag = (id, bagId) => updateList(list.map(p => p.id === id ? { ...p, bagId } : p));
+  const updateItem = (updated) => {
+    updateList(list.map(p => p.id === updated.id ? updated : p));
+    setDetailItem(null);
+  };
   const addItem = () => {
     if (!newText.trim() || !newBagId) return;
-    updateList([...list, { id: uid(), text: newText.trim(), gotIt: false, packed: false, owner: activeCouple, bagId: newBagId }]);
+    updateList([...list, { id: uid(), text: newText.trim(), gotIt: false, packed: false, owner: activeCouple, bagId: newBagId, note: '', quantityCurrent: 0, quantityTotal: 0 }]);
     setNewText(''); setAdding(false);
+  };
+
+  const handleDragEnd = (event) => {
+    const { active: a, over } = event;
+    if (!over || a.id === over.id) return;
+    const oldIndex = list.findIndex(p => p.id === a.id);
+    const newIndex = list.findIndex(p => p.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    updateList(arrayMove(list, oldIndex, newIndex));
+    haptic(15);
   };
 
   const totals = {
@@ -2238,67 +2775,71 @@ function PackingTab({ data, onSave }) {
         </div>
       )}
 
-      <div className="space-y-2">
-        {bags.map(bag => {
-          const bagItems = filtered.filter(p => p.bagId === bag.id);
-          const allBagItems = list.filter(p => p.bagId === bag.id);
-          const packedCount = allBagItems.filter(p => p.packed).length;
-          const hasSearchMatch = searchQuery.trim() && bagItems.length > 0;
-          const isCollapsed = hasSearchMatch ? false : collapsed[bag.id];
-          return (
-            <div key={bag.id} className="bag-section">
-              <button onClick={() => setCollapsed({ ...collapsed, [bag.id]: !isCollapsed })} className="bag-section-header">
-                <span className="text-2xl">{bag.icon}</span>
-                <div className="flex-1 min-w-0 text-left">
-                  <div className="sans font-bold" style={{ color: 'var(--primary)' }}>{bag.name}</div>
-                  <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>{packedCount} of {allBagItems.length} packed{filter !== 'all' && ` · showing ${bagItems.length} in this filter`}</div>
+      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={list.map(p => p.id)} strategy={verticalListSortingStrategy}>
+          <div className="space-y-2">
+            {bags.map(bag => {
+              const bagItems = filtered.filter(p => p.bagId === bag.id);
+              const allBagItems = list.filter(p => p.bagId === bag.id);
+              const packedCount = allBagItems.filter(p => p.packed).length;
+              const hasSearchMatch = searchQuery.trim() && bagItems.length > 0;
+              const isCollapsed = hasSearchMatch ? false : collapsed[bag.id];
+              return (
+                <div key={bag.id} className="bag-section">
+                  <button onClick={() => setCollapsed({ ...collapsed, [bag.id]: !isCollapsed })} className="bag-section-header">
+                    <span className="text-2xl">{bag.icon}</span>
+                    <div className="flex-1 min-w-0 text-left">
+                      <div className="sans font-bold" style={{ color: 'var(--primary)' }}>{bag.name}</div>
+                      <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>{packedCount} of {allBagItems.length} packed{filter !== 'all' && ` · showing ${bagItems.length} in this filter`}</div>
+                    </div>
+                    {isCollapsed ? <ChevronDown size={18} style={{ color: 'var(--text-soft)' }} /> : <ChevronUp size={18} style={{ color: 'var(--text-soft)' }} />}
+                  </button>
+                  {!isCollapsed && (
+                    <div className="bag-section-body">
+                      {bagItems.length === 0 ? (
+                        <div className="sans text-xs italic py-2" style={{ color: 'var(--text-soft)' }}>No items in this bag{filter !== 'all' ? ' matching filter' : ''}.</div>
+                      ) : (
+                        <div>
+                          {bagItems.map(p => (
+                            <SortablePackingRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} onOpenDetail={() => setDetailItem(p)} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-                {isCollapsed ? <ChevronDown size={18} style={{ color: 'var(--text-soft)' }} /> : <ChevronUp size={18} style={{ color: 'var(--text-soft)' }} />}
-              </button>
-              {!isCollapsed && (
-                <div className="bag-section-body">
-                  {bagItems.length === 0 ? (
-                    <div className="sans text-xs italic py-2" style={{ color: 'var(--text-soft)' }}>No items in this bag{filter !== 'all' ? ' matching filter' : ''}.</div>
-                  ) : (
-                    <div className="space-y-1">
-                      {bagItems.map(p => (
-                        <PackingItemRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} />
+              );
+            })}
+
+            {/* Unassigned section — items with no bag or unknown bagId */}
+            {(() => {
+              const knownIds = new Set(bags.map(b => b.id));
+              const unassigned = filtered.filter(p => !p.bagId || !knownIds.has(p.bagId));
+              if (unassigned.length === 0) return null;
+              const isCollapsed = collapsed['__unassigned__'];
+              return (
+                <div className="bag-section" style={{ borderColor: 'var(--accent)', borderWidth: 1 }}>
+                  <button onClick={() => setCollapsed({ ...collapsed, '__unassigned__': !isCollapsed })} className="bag-section-header">
+                    <span className="text-2xl">📦</span>
+                    <div className="flex-1 min-w-0 text-left">
+                      <div className="sans font-bold" style={{ color: 'var(--accent)' }}>Unassigned</div>
+                      <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>{unassigned.length} item{unassigned.length !== 1 ? 's' : ''} — tap the bag icon to assign</div>
+                    </div>
+                    {isCollapsed ? <ChevronDown size={18} style={{ color: 'var(--text-soft)' }} /> : <ChevronUp size={18} style={{ color: 'var(--text-soft)' }} />}
+                  </button>
+                  {!isCollapsed && (
+                    <div className="bag-section-body">
+                      {unassigned.map(p => (
+                        <SortablePackingRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} onOpenDetail={() => setDetailItem(p)} />
                       ))}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
-          );
-        })}
-
-        {/* Unassigned section — items with no bag or unknown bagId */}
-        {(() => {
-          const knownIds = new Set(bags.map(b => b.id));
-          const unassigned = filtered.filter(p => !p.bagId || !knownIds.has(p.bagId));
-          if (unassigned.length === 0) return null;
-          const isCollapsed = collapsed['__unassigned__'];
-          return (
-            <div className="bag-section" style={{ borderColor: 'var(--accent)', borderWidth: 1 }}>
-              <button onClick={() => setCollapsed({ ...collapsed, '__unassigned__': !isCollapsed })} className="bag-section-header">
-                <span className="text-2xl">📦</span>
-                <div className="flex-1 min-w-0 text-left">
-                  <div className="sans font-bold" style={{ color: 'var(--accent)' }}>Unassigned</div>
-                  <div className="sans text-[11px]" style={{ color: 'var(--text-soft)' }}>{unassigned.length} item{unassigned.length !== 1 ? 's' : ''} — assign a bag using the dropdown</div>
-                </div>
-                {isCollapsed ? <ChevronDown size={18} style={{ color: 'var(--text-soft)' }} /> : <ChevronUp size={18} style={{ color: 'var(--text-soft)' }} />}
-              </button>
-              {!isCollapsed && (
-                <div className="bag-section-body space-y-1">
-                  {unassigned.map(p => (
-                    <PackingItemRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} />
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })()}
-      </div>
+              );
+            })()}
+          </div>
+        </SortableContext>
+      </DndContext>
 
       {/* Add */}
       {bags.length > 0 && (
@@ -2315,50 +2856,135 @@ function PackingTab({ data, onSave }) {
           </div>
         </div>
       )}
+
+      {detailItem && (
+        <PackingItemDetailModal item={detailItem} bags={bags} onSave={updateItem} onClose={() => setDetailItem(null)} />
+      )}
     </div>
   );
 }
 
 /* ========================= PACKING ITEM ROW ========================= */
-function PackingItemRow({ p, bags, onToggleGot, onTogglePacked, onMoveBag, onRemove }) {
+function PackingItemRow({ p, bags, onToggleGot, onTogglePacked, onMoveBag, onRemove, onOpenDetail, sortableProps, draggable }) {
+  const bag = bags.find(b => b.id === p.bagId);
+  const bagIcon = bag?.icon || '📦';
+  const [bagPickerOpen, setBagPickerOpen] = useState(false);
+  const showQty = (p.quantityTotal || 0) > 1;
+
+  const handleRowClick = (e) => {
+    if (e.target.closest('button') || e.target.closest('select') || e.target.closest('a')) return;
+    onOpenDetail();
+  };
+
   return (
-    <div className="flex items-center gap-2 py-1">
-      <div className="dual-check">
-        <button onClick={onToggleGot} className={`check-got ${p.gotIt ? 'on' : ''}`} aria-label="Got it">
+    <div
+      ref={sortableProps?.setNodeRef}
+      style={sortableProps?.style}
+      className={`flex items-start gap-2 py-2 px-1 rounded ${sortableProps?.isDragging ? 'sortable-dragging' : ''}`}
+      onClick={handleRowClick}
+    >
+      <div className="dual-check mt-1">
+        <button onClick={(e) => { e.stopPropagation(); haptic(8); onToggleGot(); }} className={`check-got ${p.gotIt ? 'on' : ''}`} aria-label="Got it">
           {p.gotIt && <CheckCircle2 size={12} />}
         </button>
-        <button onClick={onTogglePacked} disabled={!p.gotIt} className={`check-pack ${p.packed ? 'on' : ''}`} aria-label="Packed">
+        <button onClick={(e) => { e.stopPropagation(); haptic(8); onTogglePacked(); }} disabled={!p.gotIt} className={`check-pack ${p.packed ? 'on' : ''}`} aria-label="Packed">
           {p.packed && <CheckCircle2 size={12} />}
         </button>
       </div>
-      <span className="flex-1 sans text-sm" style={{ color: 'var(--text)', textDecoration: p.packed ? 'line-through' : 'none', opacity: p.packed ? 0.5 : 1 }}>{p.text}</span>
-      <select value={p.bagId || ''} onChange={e => onMoveBag(e.target.value)} className="sans text-[10px] p-1 rounded border" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text-soft)', maxWidth: 120 }}>
-        <option value="">— No bag —</option>
-        {bags.map(b => <option key={b.id} value={b.id}>{b.icon} {b.name}</option>)}
-      </select>
-      <button onClick={onRemove} style={{ color: 'var(--text-soft)' }}><X size={13} /></button>
+      {draggable && (
+        <div {...sortableProps?.attributes} {...sortableProps?.listeners} className="sortable-handle mt-1 px-1" style={{ color: 'var(--text-soft)', opacity: 0.4 }} aria-label="Drag">
+          <span style={{ fontSize: 12 }}>⋮⋮</span>
+        </div>
+      )}
+      <div className="flex-1 min-w-0 cursor-pointer">
+        <span className="sans" style={{ color: 'var(--text)', textDecoration: p.packed ? 'line-through' : 'none', opacity: p.packed ? 0.5 : 1, fontSize: 15 }}>{p.text}</span>
+        {showQty && (
+          <span className="qty-pill ml-2" onClick={(e) => e.stopPropagation()}>
+            <button onClick={(e) => { e.stopPropagation(); /* handled in detail */ }} style={{ display: 'none' }} />
+            {p.quantityCurrent || 0}/{p.quantityTotal}
+          </span>
+        )}
+        {p.note && <div className="packing-note-inline">{p.note}</div>}
+      </div>
+      <button onClick={(e) => { e.stopPropagation(); setBagPickerOpen(!bagPickerOpen); }} className="bag-pill-btn" aria-label="Change bag">
+        {bagIcon}
+      </button>
+      <button onClick={(e) => { e.stopPropagation(); onRemove(); }} className="btn-delete" aria-label="Delete">
+        <Trash2 size={16} />
+      </button>
+
+      {bagPickerOpen && (
+        <Modal onClose={() => setBagPickerOpen(false)} title="Move to bag">
+          <div className="space-y-1">
+            <button onClick={() => { onMoveBag(''); setBagPickerOpen(false); haptic(10); }} className="w-full p-3 rounded-lg text-left flex items-center gap-3" style={{ background: !p.bagId ? 'var(--paper)' : 'transparent', border: '1px solid var(--card-border)' }}>
+              <span className="text-2xl">📦</span>
+              <span className="sans font-bold text-sm" style={{ color: 'var(--text)' }}>No bag</span>
+            </button>
+            {bags.map(b => (
+              <button key={b.id} onClick={() => { onMoveBag(b.id); setBagPickerOpen(false); haptic(10); }} className="w-full p-3 rounded-lg text-left flex items-center gap-3" style={{ background: p.bagId === b.id ? 'var(--paper)' : 'transparent', border: '1px solid var(--card-border)' }}>
+                <span className="text-2xl">{b.icon}</span>
+                <span className="sans font-bold text-sm" style={{ color: 'var(--text)' }}>{b.name}</span>
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
 
+function PackingItemDetailModal({ item, bags, onSave, onClose }) {
+  const [form, setForm] = useState(item);
+  const set = (k, v) => setForm({ ...form, [k]: v });
+  const adjustQty = (delta) => {
+    const newCurrent = Math.max(0, Math.min((form.quantityTotal || 0) || 999, (form.quantityCurrent || 0) + delta));
+    set('quantityCurrent', newCurrent);
+    haptic(8);
+  };
+  return (
+    <Modal onClose={onClose} title="Edit item">
+      <Field label="Name"><TextInput value={form.text} onChange={v => set('text', v)} /></Field>
+      <Field label="Note (optional)">
+        <textarea value={form.note || ''} onChange={e => set('note', e.target.value)} rows={3} placeholder="e.g. Beige, M, where to buy..." className="sans w-full p-3 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+      </Field>
+      <Field label="Quantity (set total to 0 to hide)">
+        <div className="flex items-center gap-3">
+          <span className="sans text-xs" style={{ color: 'var(--text-soft)' }}>Have</span>
+          <button onClick={() => adjustQty(-1)} className="bag-pill-btn"><Minus size={14} /></button>
+          <span className="sans font-bold text-lg" style={{ color: 'var(--primary)', minWidth: 30, textAlign: 'center' }}>{form.quantityCurrent || 0}</span>
+          <button onClick={() => adjustQty(1)} className="bag-pill-btn"><Plus size={14} /></button>
+          <span className="sans text-xs" style={{ color: 'var(--text-soft)' }}>of</span>
+          <input type="number" value={form.quantityTotal || 0} onChange={e => set('quantityTotal', parseInt(e.target.value) || 0)} className="sans w-16 p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+        </div>
+      </Field>
+      <Field label="Bag">
+        <select value={form.bagId || ''} onChange={e => set('bagId', e.target.value)} className="sans w-full p-3 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}>
+          <option value="">📦 No bag</option>
+          {bags.map(b => <option key={b.id} value={b.id}>{b.icon} {b.name}</option>)}
+        </select>
+      </Field>
+      <EditorButtons onSave={() => onSave(form)} onClose={onClose} />
+    </Modal>
+  );
+}
+
+function SortablePackingRow(props) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props.p.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+  return <PackingItemRow {...props} sortableProps={{ attributes, listeners, setNodeRef, style, isDragging }} draggable />;
+}
+
 /* ========================= NOTES (per-person tabs) ========================= */
 function NotesTab({ data, onSave }) {
+  const confirmDelete = useConfirmDelete(data);
   const [active, setActive] = useState('shared');
-  const [text, setText] = useState(data.notes?.shared || '');
-  const [saved, setSaved] = useState(false);
-
-  const notes = typeof data.notes === 'object' ? data.notes : { shared: data.notes || '' };
-
-  useEffect(() => {
-    if (active !== 'shopping') setText(notes[active] || '');
-    setSaved(false);
-  }, [active]);
-
-  const save = () => {
-    onSave({ ...data, notes: { ...notes, [active]: text } });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
+  const [editingId, setEditingId] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ type: 'note', title: '', body: '', url: '' });
+  const [filter, setFilter] = useState('all'); // all | note | shopping
 
   const tabs = [
     { id: 'shared', label: 'Shared' },
@@ -2366,14 +2992,68 @@ function NotesTab({ data, onSave }) {
     { id: 'michelle', label: 'Michelle' },
     { id: 'caroline', label: 'Caroline' },
     { id: 'david', label: 'David' },
-    { id: 'shopping', label: '🛍 Shopping' },
   ];
+
+  const cards = (data.notes && data.notes[active]) || [];
+  const updateCards = (newCards) => onSave({ ...data, notes: { ...data.notes, [active]: newCards } });
+
+  const startAdd = (type) => {
+    setForm({ type, title: '', body: '', url: '' });
+    setEditingId(null);
+    setAdding(true);
+  };
+  const startEdit = (card) => {
+    setForm({ type: card.type, title: card.title, body: card.body || '', url: card.url || '' });
+    setEditingId(card.id);
+    setAdding(true);
+  };
+  const saveCard = () => {
+    if (!form.title.trim()) return;
+    if (editingId) {
+      updateCards(cards.map(c => c.id === editingId ? { ...c, ...form } : c));
+    } else {
+      updateCards([...cards, { id: uid(), ...form, bought: false, createdAt: Date.now() }]);
+    }
+    setAdding(false); setEditingId(null);
+  };
+  const deleteCard = (id) => {
+    if (!confirmDelete('Delete this card?')) return;
+    haptic(20);
+    updateCards(cards.filter(c => c.id !== id));
+  };
+  const toggleBought = (id) => {
+    haptic(10);
+    updateCards(cards.map(c => c.id === id ? { ...c, bought: !c.bought } : c));
+  };
+
+  const filteredCards = useMemo(() => {
+    let result = cards;
+    if (filter === 'note') result = cards.filter(c => c.type === 'note');
+    if (filter === 'shopping') result = cards.filter(c => c.type === 'shopping');
+    // Sort: notes first, then shopping (unbought before bought)
+    return [...result].sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'note' ? -1 : 1;
+      if (a.type === 'shopping' && a.bought !== b.bought) return a.bought ? 1 : -1;
+      return (a.createdAt || 0) - (b.createdAt || 0);
+    });
+  }, [cards, filter]);
+
+  const handleDragEnd = (event) => {
+    const { active: a, over } = event;
+    if (!over || a.id === over.id) return;
+    const oldIndex = cards.findIndex(c => c.id === a.id);
+    const newIndex = cards.findIndex(c => c.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    updateCards(arrayMove(cards, oldIndex, newIndex));
+    haptic(15);
+  };
 
   return (
     <div className="fade-in">
+      {/* Person tabs */}
       <div className="flex gap-1 mb-4 overflow-x-auto hide-scroll">
         {tabs.map(t => (
-          <button key={t.id} onClick={() => setActive(t.id)} className="flex-shrink-0 sans px-3 py-1.5 text-xs font-bold rounded-full" style={
+          <button key={t.id} onClick={() => { setActive(t.id); setAdding(false); setEditingId(null); }} className="flex-shrink-0 sans px-3 py-1.5 text-xs font-bold rounded-full" style={
             active === t.id
               ? { background: 'var(--primary)', color: 'var(--bg)' }
               : { background: 'rgba(30, 42, 74, 0.06)', color: 'var(--text-soft)' }
@@ -2381,139 +3061,109 @@ function NotesTab({ data, onSave }) {
         ))}
       </div>
 
-      {active === 'shopping' ? (
-        <ShoppingList data={data} onSave={onSave} />
-      ) : (
-        <>
-          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2 flex items-center gap-2" style={{ color: 'var(--accent)' }}>
-            {active === 'shared' ? <><Heart size={12} /> Shared notes (everyone sees)</> : <><User size={12} /> {tabs.find(t => t.id === active)?.label}'s private scratchpad</>}
-          </div>
-          <textarea
-            value={text}
-            onChange={e => setText(e.target.value)}
-            rows={20}
-            placeholder={active === 'shared' ? 'Trip-wide notes anyone in the group can see…' : 'Personal notes only you care about…'}
-            className="sans w-full p-4 rounded-xl border text-sm leading-relaxed"
-            style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)', minHeight: '400px' }}
-          />
-          <div className="flex items-center gap-2 mt-3">
-            <button onClick={save} className="btn-primary sans px-5 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
-              <Save size={14} /> Save
-            </button>
-            {saved && <span className="sans text-xs" style={{ color: 'var(--accent)' }}>Saved!</span>}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ========================= SHOPPING LIST ========================= */
-function ShoppingList({ data, onSave }) {
-  const PEOPLE = ['Tim', 'Michelle', 'Caroline', 'David', 'Everyone'];
-  const [personFilter, setPersonFilter] = useState('All');
-  const [adding, setAdding] = useState(false);
-  const [editingItem, setEditingItem] = useState(null);
-  const [form, setForm] = useState({ name: '', url: '', note: '', person: 'Tim' });
-
-  const items = data.shoppingList || [];
-
-  const updateItems = (newItems) => onSave({ ...data, shoppingList: newItems });
-
-  const toggleBought = (id) => {
-    updateItems(items.map(i => i.id === id ? { ...i, bought: !i.bought } : i));
-  };
-  const deleteItem = (id) => updateItems(items.filter(i => i.id !== id));
-
-  const saveItem = () => {
-    if (!form.name.trim()) return;
-    if (editingItem) {
-      updateItems(items.map(i => i.id === editingItem ? { ...i, ...form } : i));
-      setEditingItem(null);
-    } else {
-      updateItems([...items, { id: uid(), ...form, bought: false }]);
-    }
-    setForm({ name: '', url: '', note: '', person: 'Tim' });
-    setAdding(false);
-  };
-
-  const startEdit = (item) => {
-    setForm({ name: item.name, url: item.url || '', note: item.note || '', person: item.person });
-    setEditingItem(item.id);
-    setAdding(true);
-  };
-
-  const filtered = useMemo(() => {
-    const base = personFilter === 'All' ? items : items.filter(i => i.person === personFilter || i.person === 'Everyone');
-    return [...base].sort((a, b) => a.bought === b.bought ? 0 : a.bought ? 1 : -1);
-  }, [items, personFilter]);
-
-  return (
-    <div>
-      {/* Person filter */}
-      <div className="flex gap-1.5 flex-wrap mb-3">
-        {['All', ...PEOPLE].map(p => (
-          <button key={p} onClick={() => setPersonFilter(p)} className={`filter-pill sans ${personFilter === p ? 'active' : ''}`}>{p}</button>
-        ))}
+      {/* Filter pills */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <button onClick={() => setFilter('all')} className={`filter-pill sans ${filter === 'all' ? 'active' : ''}`}>All</button>
+        <button onClick={() => setFilter('note')} className={`filter-pill sans ${filter === 'note' ? 'active' : ''}`}>📝 Notes</button>
+        <button onClick={() => setFilter('shopping')} className={`filter-pill sans ${filter === 'shopping' ? 'active' : ''}`}>🛍 Shopping</button>
       </div>
 
-      {/* Add button */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="sans text-[10px] uppercase tracking-widest font-bold" style={{ color: 'var(--accent)' }}>
-          {filtered.filter(i => !i.bought).length} to buy · {filtered.filter(i => i.bought).length} bought
+      {/* Add buttons */}
+      {!adding && (
+        <div className="flex gap-2 mb-4">
+          <button onClick={() => startAdd('note')} className="btn-primary sans flex-1 py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1"><Plus size={14} /> New note</button>
+          <button onClick={() => startAdd('shopping')} className="btn-accent sans flex-1 py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1"><Plus size={14} /> New shopping</button>
         </div>
-        <button onClick={() => { setAdding(true); setEditingItem(null); setForm({ name: '', url: '', note: '', person: 'Tim' }); }} className="btn-accent sans px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"><Plus size={10} /> Add</button>
-      </div>
+      )}
 
       {/* Add / edit form */}
       {adding && (
         <div className="p-4 rounded-xl mb-4" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
-          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>{editingItem ? 'Edit item' : 'New item'}</div>
-          <Field label="Item name"><TextInput value={form.name} onChange={v => setForm({ ...form, name: v })} placeholder="e.g. Beams shirt" /></Field>
-          <Field label="Link (optional)"><TextInput value={form.url} onChange={v => setForm({ ...form, url: v })} placeholder="https://…" /></Field>
-          <Field label="Note (optional)"><TextInput value={form.note} onChange={v => setForm({ ...form, note: v })} placeholder="Size, colour, price range…" /></Field>
-          <Field label="Who wants it">
-            <div className="flex gap-1.5 flex-wrap">
-              {PEOPLE.map(p => (
-                <button key={p} onClick={() => setForm({ ...form, person: p })} className={`filter-pill sans ${form.person === p ? 'active' : ''}`}>{p}</button>
-              ))}
-            </div>
+          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-3" style={{ color: 'var(--accent)' }}>{editingId ? 'Edit' : 'New'} {form.type === 'shopping' ? '🛍 shopping item' : '📝 note'}</div>
+          <Field label="Title"><TextInput value={form.title} onChange={v => setForm({ ...form, title: v })} placeholder={form.type === 'shopping' ? 'e.g. Beams shirt' : 'e.g. Restaurant ideas'} /></Field>
+          {form.type === 'shopping' && (
+            <Field label="Link (optional)"><TextInput value={form.url} onChange={v => setForm({ ...form, url: v })} placeholder="https://…" /></Field>
+          )}
+          <Field label={form.type === 'shopping' ? 'Note (size, colour, price…)' : 'Notes'}>
+            <textarea value={form.body} onChange={e => setForm({ ...form, body: e.target.value })} rows={form.type === 'shopping' ? 2 : 8} className="sans w-full p-3 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
           </Field>
           <div className="flex gap-2 mt-3">
-            <button onClick={() => { setAdding(false); setEditingItem(null); }} className="sans flex-1 py-2 rounded-lg border font-bold text-sm" style={{ borderColor: 'var(--card-border)', color: 'var(--text)' }}>Cancel</button>
-            <button onClick={saveItem} className="btn-primary sans flex-1 py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1"><Save size={14} /> Save</button>
+            <button onClick={() => { setAdding(false); setEditingId(null); }} className="sans flex-1 py-2 rounded-lg border font-bold text-sm" style={{ borderColor: 'var(--card-border)', color: 'var(--text)' }}>Cancel</button>
+            <button onClick={saveCard} className="btn-primary sans flex-1 py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1"><Save size={14} /> Save</button>
           </div>
         </div>
       )}
 
-      {/* List */}
-      <div className="space-y-2">
-        {filtered.length === 0 && (
-          <div className="sans text-xs italic text-center py-8" style={{ color: 'var(--text-soft)' }}>No items yet — tap Add to start your shopping list.</div>
-        )}
-        {filtered.map(item => (
-          <div key={item.id} className="rounded-xl p-3 card-shadow flex items-start gap-3" style={{ background: item.bought ? 'var(--paper)' : 'var(--card)', opacity: item.bought ? 0.65 : 1 }}>
-            <button onClick={() => toggleBought(item.id)} className={`tickbox mt-0.5 flex-shrink-0 ${item.bought ? 'on' : ''}`}>
-              {item.bought && <CheckCircle2 size={14} />}
-            </button>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{item.name}</span>
-                <span className="chip" style={{ background: 'rgba(30, 42, 74, 0.08)', color: 'var(--primary)' }}>{item.person}</span>
-              </div>
-              {item.note && <div className="sans text-xs mt-0.5" style={{ color: 'var(--text-soft)' }}>{item.note}</div>}
-              {item.url && (
-                <a href={item.url} target="_blank" rel="noreferrer" className="sans text-xs font-semibold mt-1 inline-flex items-center gap-1" style={{ color: 'var(--accent)' }}>
-                  <ExternalLink size={11} /> View link
-                </a>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => startEdit(item)} style={{ color: 'var(--accent)' }}><Edit3 size={13} /></button>
-              <button onClick={() => deleteItem(item.id)} style={{ color: 'var(--text-soft)' }}><Trash2 size={13} /></button>
-            </div>
+      {/* Cards list */}
+      {filteredCards.length === 0 && !adding && (
+        <div className="sans text-sm italic text-center py-8" style={{ color: 'var(--text-soft)' }}>
+          No {filter === 'all' ? 'cards' : filter === 'note' ? 'notes' : 'shopping items'} yet — tap "New {filter === 'shopping' ? 'shopping' : 'note'}" to add one.
+        </div>
+      )}
+
+      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={filteredCards.map(c => c.id)} strategy={verticalListSortingStrategy}>
+          <div className="space-y-2">
+            {filteredCards.map(card => (
+              <SortableNoteCard
+                key={card.id}
+                card={card}
+                onClick={() => startEdit(card)}
+                onToggleBought={() => toggleBought(card.id)}
+                onDelete={() => deleteCard(card.id)}
+              />
+            ))}
           </div>
-        ))}
+        </SortableContext>
+      </DndContext>
+    </div>
+  );
+}
+
+function SortableNoteCard({ card, onClick, onToggleBought, onDelete }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: card.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.7 : 1,
+  };
+  const isShopping = card.type === 'shopping';
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      onClick={(e) => {
+        // Don't fire if click was on a button or link inside
+        if (e.target.closest('button') || e.target.closest('a')) return;
+        onClick();
+      }}
+      className={`note-card ${isShopping ? 'note-card-shopping' : ''} ${isShopping && card.bought ? 'bought' : ''} ${isDragging ? 'sortable-dragging' : ''}`}
+    >
+      <div className="flex items-start gap-3">
+        {isShopping && (
+          <button onClick={(e) => { e.stopPropagation(); onToggleBought(); }} className={`tickbox mt-0.5 flex-shrink-0 ${card.bought ? 'on' : ''}`}>
+            {card.bought && <CheckCircle2 size={14} />}
+          </button>
+        )}
+        <div {...attributes} {...listeners} className="sortable-handle flex-shrink-0 mt-1" style={{ color: 'var(--text-soft)', opacity: 0.4, padding: 4 }} aria-label="Drag to reorder">
+          <span style={{ fontSize: 14, lineHeight: 1 }}>⋮⋮</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="sans font-bold" style={{ color: 'var(--primary)', fontSize: 16 }}>
+              {isShopping ? '🛍 ' : ''}{card.title || 'Untitled'}
+            </span>
+          </div>
+          {card.body && <div className="sans mt-1 leading-relaxed" style={{ color: 'var(--text-soft)', fontSize: 14, whiteSpace: 'pre-wrap', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{card.body}</div>}
+          {card.url && (
+            <a href={card.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="sans text-xs font-semibold mt-2 inline-flex items-center gap-1" style={{ color: 'var(--accent)' }}>
+              <ExternalLink size={12} /> Open link
+            </a>
+          )}
+        </div>
+        <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="btn-delete" aria-label="Delete">
+          <Trash2 size={16} />
+        </button>
       </div>
     </div>
   );
