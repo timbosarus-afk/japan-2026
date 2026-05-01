@@ -167,6 +167,26 @@ function migrate(data) {
   const newItems = TRIP_DATA.packing.filter(p => !existingTexts.has(p.text.toLowerCase().trim()));
   if (newItems.length > 0) d.packing = [...d.packing, ...newItems.map(p => ({ ...p, note: '', quantityCurrent: 0, quantityTotal: 0 }))];
 
+  // One-time migration: replace Day 2 if it still has the old Ueno/Kappabashi plan
+  d.days = d.days.map(day => {
+    if (day.id === 'd2' && (day.title.includes('Ueno') || day.title.includes('Kappabashi'))) {
+      const newDay = TRIP_DATA.days.find(x => x.id === 'd2');
+      if (newDay) return { ...newDay, rating: day.rating || 0, diary: day.diary || '', pinned: day.pinned || [], wishes: day.wishes || [], ideas: day.ideas || [] };
+    }
+    return day;
+  });
+
+  // One-time migration: add Tokyo Cruise booking if not already present
+  if (!(d.bookings || []).find(b => b.id === 'b_cruise')) {
+    const cruiseBooking = { id: 'b_cruise', title: 'Tokyo Cruise — Hotaluna/Himiko boat', detail: 'Asakusa → Toyosu (Asakusa-Odaiba Direct Line)', date: '2026-05-12', status: 'tbd', notes: 'Book via Tokyo Cruise website. Departs Asakusa Pier 11:30. ~45 min. Aiden naps on the boat.', files: [] };
+    d.bookings = [cruiseBooking, ...(d.bookings || [])];
+  }
+
+  // One-time migration: update aidenStatus for Day 2
+  if (d.aidenStatus && d.aidenStatus['2026-05-12'] === 'All together') {
+    d.aidenStatus['2026-05-12'] = 'All together am, Grandparents pm (Small Worlds)';
+  }
+
   return d;
 }
 
