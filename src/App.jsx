@@ -1282,9 +1282,9 @@ function DayMapPage({ day, dayIndex, onBack }) {
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState(null);
 
-  // Extract items with mapUrl that we can geocode
+  // All items with either a mapUrl or a title — we'll geocode using whichever is available
   const mappableItems = useMemo(() => {
-    return (day.items || []).filter(it => it.mapUrl && /maps/.test(it.mapUrl));
+    return (day.items || []).filter(it => it.title && it.type !== 'note' && it.type !== 'document');
   }, [day.items]);
 
   useEffect(() => {
@@ -1306,18 +1306,24 @@ function DayMapPage({ day, dayIndex, onBack }) {
           mapTypeControl: false,
           streetViewControl: false,
           fullscreenControl: false,
+          gestureHandling: 'greedy', // single finger pan
         });
 
         geocoder = new maps.Geocoder();
 
-        // Extract a query string from a maps URL (matches our app's pattern)
-        const extractQuery = (url) => {
+        // Extract a query string from a maps URL, fall back to item title
+        const extractQuery = (url, fallbackTitle) => {
           try {
             const u = new URL(url);
+            // Handle ?query=, ?q=, and also /search/?api=1&query= formats
             const q = u.searchParams.get('query') || u.searchParams.get('q');
-            if (q) return decodeURIComponent(q);
+            if (q) return decodeURIComponent(q).replace(/\+/g, ' ');
+            // Handle /maps/search/?api=1&query=...
+            const match = url.match(/[?&]query=([^&]+)/);
+            if (match) return decodeURIComponent(match[1]).replace(/\+/g, ' ');
           } catch {}
-          return null;
+          // Fall back to item title + Japan for context
+          return fallbackTitle ? `${fallbackTitle} Japan` : null;
         };
 
         const positions = [];
@@ -1325,7 +1331,7 @@ function DayMapPage({ day, dayIndex, onBack }) {
 
         for (let i = 0; i < mappableItems.length; i++) {
           const it = mappableItems[i];
-          const query = extractQuery(it.mapUrl);
+          const query = extractQuery(it.mapUrl, it.title);
           if (!query) continue;
 
           const result = await new Promise((res) => {
@@ -2639,7 +2645,6 @@ function PackingTab({ data, onSave }) {
   const confirmDelete = useConfirmDelete(data);
   const [activeCouple, setActiveCouple] = useState('TM'); // TM | CD
   const [filter, setFilter] = useState('all'); // all | need | got | full
-  const [collapsed, setCollapsed] = useState({}); // bagId -> bool
   const [searchQuery, setSearchQuery] = useState('');
   const [adding, setAdding] = useState(false);
   const [newText, setNewText] = useState('');
@@ -2650,7 +2655,12 @@ function PackingTab({ data, onSave }) {
   const bags = (data.bags || []).filter(b => b.owner === activeCouple);
   const fieldName = activeCouple === 'TM' ? 'packing' : 'packingCD';
 
-  // Default new bag selection + reset search when switching couple
+  // Default all bags collapsed
+  const [collapsed, setCollapsed] = useState(() => {
+    const initial = { '__unassigned__': true };
+    (data.bags || []).forEach(b => { initial[b.id] = true; });
+    return initial;
+  });
   useEffect(() => {
     if (bags.length > 0 && !bags.find(b => b.id === newBagId)) {
       setNewBagId(bags[0].id);
