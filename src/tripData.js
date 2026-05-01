@@ -295,6 +295,9 @@ export const TRIP_DATA = {
     { id: 'tpl10', text: 'Tissues' },
   ],
 
+  // Daily essentials — synced to every day's bag via Settings
+  dailyEssentials: [],
+
   bags: BAGS,
   predepTasks: PREDEP_TASKS,
   expenses: [],
@@ -302,7 +305,7 @@ export const TRIP_DATA = {
   theme: 'auto', // auto | light | dark | neon
 
   aidenStatus: {
-    '2026-05-11': 'All together', '2026-05-12': 'All together',
+    '2026-05-11': 'All together', '2026-05-12': 'All together am, Grandparents pm (Small Worlds)',
     '2026-05-13': 'Grandparents (DisneySea)', '2026-05-14': 'All together',
     '2026-05-15': 'All together', '2026-05-16': 'Split — T+M am, all pm',
     '2026-05-17': 'Grandparents (Small Worlds am)', '2026-05-18': 'All together',
@@ -337,17 +340,16 @@ export const TRIP_DATA = {
         { id: uid(), type: 'note', time: '18:00', title: 'Early Aiden bedtime; optional shift shopping', owner: 'EVERYONE', places: [] },
       ],
     },
-    { id: 'd2', date: '2026-05-12', title: 'Asakusa · Ueno', titleJp: '浅草 · 上野', summary: 'Sensō-ji morning, Ueno Park pandas afternoon. Optional Kappabashi.',
+    { id: 'd2', date: '2026-05-12', title: 'Asakusa · Toyosu', titleJp: '浅草 · 豊洲', summary: 'Sensō-ji morning, river cruise to Toyosu, lunch + foot bath at Toyosu Market. Afternoon split — C+D+Aiden to Small Worlds, T+M TBD.',
       pinned: [], wishes: [], ideas: [], rating: 0, diary: '', dayBagExtras: [], dayBagDone: {},
       items: [
-        { id: uid(), type: 'place', time: '09:30', title: 'Kaminarimon Gate + Nakamise street', owner: 'EVERYONE', mapUrl: 'https://www.google.com/maps/search/?api=1&query=Kaminarimon+Asakusa', places: [] },
-        { id: uid(), type: 'place', time: '10:30', title: 'Sensō-ji Temple grounds', owner: 'EVERYONE', mapUrl: 'https://www.google.com/maps/search/?api=1&query=Senso-ji+Temple', places: [] },
-        { id: uid(), type: 'place', time: '11:30', title: 'Optional: Kappabashi Kitchenware Street', owner: 'EVERYONE', mapUrl: 'https://www.google.com/maps/search/?api=1&query=Kappabashi+Street+Tokyo', status: 'tbd', note: 'Knives & kitchenware. Most shops shut Sundays.', places: [] },
-        { id: uid(), type: 'restaurant', time: '12:30', title: 'Lunch — TBD', status: 'tbd', owner: 'EVERYONE', places: [] },
-        { id: uid(), type: 'transport', time: '14:00', title: 'Ginza line Asakusa → Ueno', owner: 'EVERYONE', places: [] },
-        { id: uid(), type: 'place', time: '14:30', title: 'Ueno Park', owner: 'EVERYONE', mapUrl: 'https://www.google.com/maps/search/?api=1&query=Ueno+Park+Tokyo', places: [] },
-        { id: uid(), type: 'activity', time: '15:00', title: 'Ueno Zoo — East Garden (pandas)', owner: 'EVERYONE', mapUrl: 'https://www.google.com/maps/search/?api=1&query=Ueno+Zoo', note: 'East Garden only.', places: [] },
-        { id: uid(), type: 'note', time: '18:30', title: 'Evening: Akihabara tag-team', owner: 'TM', note: '10 min from Ueno on Yamanote.', places: [] },
+        { id: uid(), type: 'place', time: '09:00', title: 'Sensō-ji + Asakusa backstreets', owner: 'EVERYONE', mapUrl: 'https://www.google.com/maps/search/?api=1&query=Senso-ji+Temple+Asakusa', note: 'Explore the temple and surrounding Asakusa backstreets. Address: 2-chōme-3-1 Asakusa, Taito City.', places: [] },
+        { id: uid(), type: 'transport', time: '11:30', title: 'River Cruise — Hotaluna/Himiko (Asakusa → Toyosu)', owner: 'EVERYONE', status: 'tbd', mapUrl: 'https://www.google.com/maps/search/?api=1&query=Tokyo+Cruise+Asakusa+Pier', note: 'The "Spaceship" boat — Asakusa-Odaiba Direct Line, ~45 min. Plan for Aiden\'s nap during this. Departs Tokyo Cruise Asakusa Pier (1-1-1 Hanakawado, Taito City). ⚠️ Pre-book.', places: [] },
+        { id: uid(), type: 'restaurant', time: '12:15', title: 'Lunch — Toyosu Senkyaku Banrai', owner: 'EVERYONE', mapUrl: 'https://www.google.com/maps/search/?api=1&query=Toyosu+Senkyaku+Banrai', note: 'Edo-style complex. 8th-floor rooftop has a free foot bath — perfect while Aiden naps in stroller. Address: 6-5-1 Toyosu, Koto City.', places: [] },
+        { id: uid(), type: 'transport', time: '14:30', title: 'Yurikamome Line: Toyosu → Ariake-tennis-no-mori', owner: 'EVERYONE', places: [] },
+        { id: uid(), type: 'activity', time: '14:45', title: 'C+D+Aiden: Small Worlds Miniature Museum', owner: 'CD', mapUrl: 'https://www.google.com/maps/search/?api=1&query=Small+Worlds+Tokyo+Ariake', note: 'Indoor, stroller-friendly. Address: 1-3-33 Ariake, Koto City.', places: [] },
+        { id: uid(), type: 'activity', time: '14:45', title: 'T+M: Free afternoon', owner: 'TM', status: 'tbd', note: 'Destination TBD.', places: [] },
+        { id: uid(), type: 'note', time: '18:30', title: 'Evening: Akihabara tag-team (optional)', owner: 'TM', note: 'If energy allows.', places: [] },
       ],
     },
     { id: 'd3', date: '2026-05-13', title: 'DisneySea · Thrifting', titleJp: '東京ディズニーシー', summary: 'Split day. Grandparents take Aiden to DisneySea. T+M thrifting.',
@@ -496,6 +498,7 @@ export const TRIP_DATA = {
   bookings: [
     { id: 'b1', title: 'IDP (International Driving Permit)', detail: 'UK Post Office', date: '', deadline: '2026-03-01', status: 'urgent', notes: '£5.50, passport + UK licence + photo.', files: [] },
     { id: 'b2', title: 'Shizuoka rental car + child seat', detail: 'Toyota Rent-a-Car', date: '2026-05-18', deadline: '2026-04-30', status: 'tbd', notes: 'Child seat needs advance reservation.', files: [] },
+    { id: 'b_cruise', title: 'Tokyo Cruise — Hotaluna/Himiko boat', detail: 'Asakusa → Toyosu (Asakusa-Odaiba Direct Line)', date: '2026-05-12', status: 'tbd', notes: 'Book via Tokyo Cruise website. Departs Asakusa Pier 11:30. ~45 min. Aiden naps on the boat.', files: [] },
     { id: 'b3', title: 'Tokyo DisneySea tickets', detail: 'Buy 13 March', date: '2026-05-13', deadline: '2026-03-13', status: 'urgent', notes: '2 months ahead exactly.', files: [] },
     { id: 'b4', title: 'Tokyo Disneyland tickets', detail: 'Buy 14 March', date: '2026-05-14', deadline: '2026-03-14', status: 'urgent', notes: '2 months ahead exactly.', files: [] },
     { id: 'b5', title: 'teamLab Biovortex Kyoto tickets', detail: 'Timed entry', date: '2026-05-21', deadline: '2026-05-10', status: 'tbd', notes: 'Book ~2 weeks ahead.', files: [] },
