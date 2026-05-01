@@ -516,20 +516,19 @@ export default function App() {
     <div className="min-h-screen" style={{ backgroundColor: 'var(--bg)' }}>
       {!online && <div className="offline-banner sans">Offline — changes will sync when connected</div>}
       {refreshing && <div className="refresh-indicator sans">Refreshing…</div>}
-      <header className="sticky top-0 z-30" style={{ backgroundColor: 'var(--bg)', borderBottom: '2px solid var(--card-border)', marginTop: !online ? 28 : 0 }}>
-        <div className="max-w-2xl mx-auto px-5 pt-4 pb-2">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex-1 min-w-0">
-              <div className="sans text-[10px] uppercase tracking-[0.25em] font-semibold flex items-center gap-2" style={{ color: 'var(--accent)' }}>
-                {tripEnded ? 'Trip complete' : countdown > 0 ? `${countdown} days to go` : countdown === 0 ? 'Today begins' : 'In progress'}
-                <SyncBadge state={syncState} />
-              </div>
-              <h1 className="text-[28px] leading-none font-bold mt-1" style={{ color: 'var(--primary)' }}>{data.trip.title}</h1>
-              <div className="jp text-xs mt-1" style={{ color: 'var(--text-soft)' }}>{data.trip.subtitleJp}</div>
+      <header className="sticky top-0 z-30" style={{ backgroundColor: 'var(--bg)', borderBottom: '1px solid var(--card-border)', marginTop: !online ? 28 : 0 }}>
+        <div className="max-w-2xl mx-auto px-4 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <h1 className="sans text-base font-bold leading-none" style={{ color: 'var(--primary)' }}>{data.trip.title}</h1>
+              <span className="sans text-[11px] font-semibold px-2 py-0.5 rounded-full" style={{ background: 'rgba(192,48,40,0.1)', color: 'var(--accent)' }}>
+                {tripEnded ? 'Complete' : countdown > 0 ? `${countdown}d` : countdown === 0 ? 'Today!' : 'Ongoing'}
+              </span>
+              <SyncBadge state={syncState} />
             </div>
-            <div className="flex items-center gap-2">
-              <button onClick={() => setSearchOpen(true)} className="p-2 rounded-full" style={{ color: 'var(--primary)' }} aria-label="Search"><Search size={18} /></button>
-              <button onClick={() => setSettingsOpen(true)} className="settings-cog" aria-label="Settings"><Settings size={16} /></button>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setSearchOpen(true)} className="p-2 rounded-full" style={{ color: 'var(--primary)' }} aria-label="Search"><Search size={17} /></button>
+              <button onClick={() => setSettingsOpen(true)} className="settings-cog" style={{ width: 32, height: 32 }} aria-label="Settings"><Settings size={15} /></button>
               {onTrip && (
                 <button onClick={() => setTodayMode(t => !t)} className="sans text-[10px] font-bold px-2 py-1 rounded-full" style={{ background: todayMode ? 'var(--accent)' : 'rgba(192, 48, 40, 0.1)', color: todayMode ? 'var(--bg)' : 'var(--accent)' }}>
                   TODAY
@@ -540,17 +539,17 @@ export default function App() {
         </div>
         {!todayMode && (
           <nav className="max-w-2xl mx-auto px-2 overflow-x-auto hide-scroll">
-            <div className="flex gap-1 pb-2">
+            <div className="flex gap-1 pb-1.5">
               {TABS.map(t => (
                 <button
                   key={t.id}
                   onClick={() => { setTab(t.id); setActiveDay(null); setActiveItem(null); }}
-                  className="sans px-3 py-1.5 text-xs font-semibold rounded-full whitespace-nowrap flex items-center gap-1.5 transition"
+                  className="sans px-2.5 py-1 text-[11px] font-semibold rounded-full whitespace-nowrap flex items-center gap-1 transition"
                   style={tab === t.id
                     ? { background: 'var(--primary)', color: 'var(--bg)' }
                     : { color: 'var(--text-soft)', backgroundColor: 'rgba(30, 42, 74, 0.06)' }}
                 >
-                  <t.Icon size={12} /> {t.label}
+                  <t.Icon size={11} /> {t.label}
                 </button>
               ))}
             </div>
@@ -1146,7 +1145,7 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
     .sort((a, b) => a.time.localeCompare(b.time));
 
   if (mapOpen) {
-    return <DayMapPage day={day} dayIndex={dayIndex} onBack={() => setMapOpen(false)} />;
+    return <DayMapPage day={day} dayIndex={dayIndex} onBack={() => setMapOpen(false)} onNavigateToItem={(itemId) => { setMapOpen(false); onOpenItem(itemId); }} />;
   }
 
   return (
@@ -1306,216 +1305,244 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
 }
 
 /* ========================= DAY MAP PAGE ========================= */
-function DayMapPage({ day, dayIndex, onBack }) {
+function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
   const mapRef = useRef(null);
+  const mapInstanceRef = useRef(null);
+  const boundsRef = useRef(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedItem, setSelectedItem] = useState(null);
-
-  // All items with either a mapUrl or a title — we'll geocode using whichever is available
-  const mappableItems = useMemo(() => {
-    return (day.items || []).filter(it => it.title && it.type !== 'note' && it.type !== 'document');
-  }, [day.items]);
-
+  const [selectedId, setSelectedId] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+  const [groupFilter, setGroupFilter] = useState('all');
   const [debugInfo, setDebugInfo] = useState([]);
+  const cardRefs = useRef({});
+
+  const allItems = useMemo(() =>
+    (day.items || []).filter(it => it.type !== 'note' && it.type !== 'document'),
+    [day.items]);
+
+  const filteredItems = useMemo(() => {
+    if (groupFilter === 'TM') return allItems.filter(i => i.owner === 'TM' || i.owner === 'EVERYONE');
+    if (groupFilter === 'CD') return allItems.filter(i => i.owner === 'CD' || i.owner === 'EVERYONE');
+    return allItems;
+  }, [allItems, groupFilter]);
+
+  const selectItem = (id) => {
+    setSelectedId(id);
+    setExpandedId(id);
+    setTimeout(() => {
+      cardRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 100);
+  };
+
+  const recenter = () => {
+    if (mapInstanceRef.current && boundsRef.current && !boundsRef.current.isEmpty()) {
+      mapInstanceRef.current.fitBounds(boundsRef.current, 60);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
-    let map, geocoder, markers = [], polyline;
+    let markers = [];
+    let polyline = null;
 
     (async () => {
       try {
         const maps = await loadGoogleMaps();
-        if (cancelled) return;
-        if (!mapRef.current) return;
+        if (cancelled || !mapRef.current) return;
 
-        // Default centre roughly Tokyo
-        map = new maps.Map(mapRef.current, {
+        const map = new maps.Map(mapRef.current, {
           center: { lat: 35.68, lng: 139.76 },
           zoom: 11,
-          disableDefaultUI: false,
+          disableDefaultUI: true,
           zoomControl: true,
-          mapTypeControl: false,
-          streetViewControl: false,
-          fullscreenControl: false,
-          gestureHandling: 'greedy', // single finger pan
+          gestureHandling: 'greedy',
         });
+        mapInstanceRef.current = map;
+        map.addListener('click', () => { setSelectedId(null); setExpandedId(null); });
 
-        geocoder = new maps.Geocoder();
+        const geocoder = new maps.Geocoder();
 
-        // Try to extract lat/lng directly from URL first (most reliable)
         const extractCoords = (url) => {
           if (!url) return null;
-          // Match @lat,lng or ll=lat,lng patterns
-          const atMatch = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-          if (atMatch) return { lat: parseFloat(atMatch[1]), lng: parseFloat(atMatch[2]) };
-          const llMatch = url.match(/[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/);
-          if (llMatch) return { lat: parseFloat(llMatch[1]), lng: parseFloat(llMatch[2]) };
+          const m = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+          if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
           return null;
         };
 
-        // Extract text query from URL
-        const extractQuery = (url, fallbackTitle) => {
+        const extractQuery = (url, title) => {
           if (url) {
             try {
-              const match = url.match(/[?&]query=([^&]+)/);
-              if (match) return decodeURIComponent(match[1]).replace(/\+/g, ' ');
+              const m = url.match(/[?&]query=([^&]+)/);
+              if (m) return decodeURIComponent(m[1]).replace(/\+/g, ' ');
               const u = new URL(url);
               const q = u.searchParams.get('query') || u.searchParams.get('q');
               if (q) return decodeURIComponent(q).replace(/\+/g, ' ');
             } catch {}
           }
-          return fallbackTitle ? `${fallbackTitle} Japan` : null;
+          return title ? title + ' Japan' : null;
         };
 
-        const positions = [];
         const bounds = new maps.LatLngBounds();
+        boundsRef.current = bounds;
         const dbg = [];
+        const positions = [];
 
-        for (let i = 0; i < mappableItems.length; i++) {
-          const it = mappableItems[i];
-
-          // Try direct coordinates first
+        for (let i = 0; i < filteredItems.length; i++) {
+          const it = filteredItems[i];
           const coords = extractCoords(it.mapUrl);
           if (coords) {
             positions.push({ pos: coords, item: it, index: i + 1 });
             bounds.extend(new maps.LatLng(coords.lat, coords.lng));
-            dbg.push(`✅ ${it.title} — direct coords`);
+            dbg.push('✅ ' + it.title + ' — coords');
             continue;
           }
-
-          // Try geocoding
           const query = extractQuery(it.mapUrl, it.title);
-          if (!query) { dbg.push(`⏭ ${it.title} — skipped (no query)`); continue; }
-
+          if (!query) { dbg.push('⏭ ' + it.title); continue; }
           const result = await new Promise((res) => {
             geocoder.geocode({ address: query, region: 'jp' }, (results, status) => {
               if (status === 'OK' && results?.[0]) res(results[0].geometry.location);
-              else { dbg.push(`❌ ${it.title} — geocode failed: ${status}`); res(null); }
+              else { dbg.push('❌ ' + it.title + ' — ' + status); res(null); }
             });
           });
-
           if (cancelled) return;
-
           if (result) {
-            const pos = { lat: result.lat(), lng: result.lng() };
-            positions.push({ pos, item: it, index: i + 1 });
+            positions.push({ pos: { lat: result.lat(), lng: result.lng() }, item: it, index: i + 1 });
             bounds.extend(result);
-            dbg.push(`✅ ${it.title} — geocoded`);
+            dbg.push('✅ ' + it.title + ' — geocoded');
           }
         }
 
         setDebugInfo(dbg);
 
-        // Add numbered markers
-        positions.forEach(({ pos, item, index }) => {
-          const marker = new maps.Marker({
-            position: pos,
-            map,
-            label: { text: String(index), color: '#fff', fontSize: '12px', fontWeight: 'bold' },
-            icon: {
-              path: maps.SymbolPath.CIRCLE,
-              scale: 14,
-              fillColor: '#c03028',
-              fillOpacity: 1,
-              strokeColor: '#fff',
-              strokeWeight: 2,
-            },
-            title: item.title,
-          });
-          marker.addListener('click', () => setSelectedItem(item));
-          markers.push(marker);
-        });
-
-        // Draw polyline connecting them in order
         if (positions.length > 1) {
           polyline = new maps.Polyline({
             path: positions.map(p => p.pos),
-            geodesic: true,
-            strokeColor: '#1e2a4a',
-            strokeOpacity: 0.7,
-            strokeWeight: 3,
-            map,
+            geodesic: true, strokeColor: '#1e2a4a',
+            strokeOpacity: 0.6, strokeWeight: 3, map,
           });
         }
 
-        // Fit map to bounds
+        positions.forEach(({ pos, item, index }) => {
+          const marker = new maps.Marker({
+            position: pos, map,
+            label: { text: String(index), color: '#fff', fontSize: '12px', fontWeight: 'bold' },
+            icon: { path: maps.SymbolPath.CIRCLE, scale: 14, fillColor: '#c03028', fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 },
+            title: item.title,
+          });
+          marker.addListener('click', () => selectItem(item.id));
+          markers.push(marker);
+        });
+
         if (positions.length > 0) {
           map.fitBounds(bounds, 60);
-          // Cap zoom for single point
           if (positions.length === 1) map.setZoom(15);
         }
-
         setLoading(false);
       } catch (e) {
-        if (!cancelled) {
-          setError(e.message || 'Failed to load map');
-          setLoading(false);
-        }
+        if (!cancelled) { setError(e.message); setLoading(false); }
       }
     })();
 
     return () => {
       cancelled = true;
-      markers.forEach(m => m.setMap?.(null));
+      markers.forEach(m => m.setMap && m.setMap(null));
       if (polyline) polyline.setMap(null);
     };
-  }, [day.id, mappableItems]);
+  }, [day.id, groupFilter, filteredItems.length]);
 
   return (
     <div className="fade-in">
-      <button onClick={onBack} className="sans flex items-center gap-1 text-xs mb-4 font-semibold" style={{ color: 'var(--accent)' }}>
+      <button onClick={onBack} className="sans flex items-center gap-1 text-xs mb-3 font-semibold" style={{ color: 'var(--accent)' }}>
         <ChevronLeft size={14} /> Back to {day.title}
       </button>
-      <div className="sans text-[10px] uppercase tracking-[0.2em] font-semibold mb-1" style={{ color: 'var(--accent)' }}>
-        Day {dayIndex + 1} · {fmtDate(day.date)}
+
+      <div className="flex gap-2 mb-3 items-center">
+        {[['all', 'All'], ['TM', 'T&M'], ['CD', 'C&D']].map(([val, label]) => (
+          <button key={val} onClick={() => { setGroupFilter(val); setSelectedId(null); setExpandedId(null); }}
+            className={"filter-pill sans " + (groupFilter === val ? 'active' : '')}>{label}</button>
+        ))}
+        <div className="flex-1" />
+        <button onClick={recenter} className="sans text-xs font-bold px-2 py-1 rounded-full flex items-center gap-1"
+          style={{ background: 'var(--card)', border: '1px solid var(--card-border)', color: 'var(--primary)' }}>
+          <MapIcon size={12} /> Recenter
+        </button>
       </div>
-      <h2 className="text-2xl font-bold mb-3" style={{ color: 'var(--primary)' }}>{day.title} — Map view</h2>
 
       {error ? (
         <div className="bg-white rounded-xl p-6 card-shadow text-center sans" style={{ color: 'var(--text-soft)' }}>
-          <AlertCircle size={32} className="mx-auto mb-3" style={{ color: 'var(--accent)' }} />
-          <div className="font-bold text-base" style={{ color: 'var(--primary)' }}>Map unavailable</div>
-          <div className="text-sm mt-2">{error}</div>
-          <div className="text-xs mt-4 italic">Check Vercel env var <strong>VITE_GOOGLE_MAPS_KEY</strong> is set, then redeploy.</div>
+          <AlertCircle size={28} className="mx-auto mb-2" style={{ color: 'var(--accent)' }} />
+          <div className="font-bold" style={{ color: 'var(--primary)' }}>Map unavailable</div>
+          <div className="text-sm mt-1">{error}</div>
+          <div className="text-xs mt-3 italic">If you see REQUEST_DENIED, enable the Geocoding API in Google Cloud Console.</div>
         </div>
       ) : (
         <>
-          {loading && (
-            <div className="sans text-sm text-center py-3" style={{ color: 'var(--text-soft)' }}>Loading map…</div>
-          )}
-          <div ref={mapRef} className="map-container" />
+          {loading && <div className="sans text-sm text-center py-2" style={{ color: 'var(--text-soft)' }}>Placing pins…</div>}
+          <div ref={mapRef} style={{ height: 280, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--card-border)', marginBottom: 12 }} />
 
-          {/* Debug info — remove once pins working */}
-          {debugInfo.length > 0 && (
-            <div className="mt-2 p-3 rounded-xl sans text-xs space-y-1" style={{ background: 'var(--paper)', border: '1px solid var(--card-border)' }}>
-              <div className="font-bold mb-1" style={{ color: 'var(--accent)' }}>Pin status (tap Map to refresh)</div>
-              {debugInfo.map((d, i) => <div key={i} style={{ color: 'var(--text-soft)' }}>{d}</div>)}
+          {debugInfo.some(d => d.startsWith('❌')) && (
+            <div className="mb-3 p-3 rounded-xl sans" style={{ background: 'var(--paper)', border: '1px solid var(--card-border)' }}>
+              <div className="font-bold text-xs mb-1" style={{ color: 'var(--accent)' }}>Some pins failed</div>
+              {debugInfo.filter(d => d.startsWith('❌')).map((d, i) => (
+                <div key={i} className="text-xs" style={{ color: 'var(--text-soft)' }}>{d}</div>
+              ))}
+              <div className="text-xs italic mt-1" style={{ color: 'var(--text-soft)' }}>REQUEST_DENIED = enable Geocoding API in Google Cloud Console</div>
             </div>
           )}
 
-          {/* Numbered list under map */}
-          <div className="mt-4 space-y-1">
-            {mappableItems.map((it, i) => {
+          <div className="space-y-2">
+            {filteredItems.map((it, i) => {
+              const isExpanded = expandedId === it.id;
+              const isSelected = selectedId === it.id;
               const Icon = ICONS[it.type] || MapPin;
               return (
-                <div key={it.id} className="bg-white rounded-lg p-3 card-shadow flex items-center gap-3" style={selectedItem?.id === it.id ? { borderLeft: '3px solid var(--accent)' } : {}}>
-                  <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center sans font-bold text-xs" style={{ background: 'var(--accent)', color: 'var(--bg)' }}>{i + 1}</div>
-                  <Icon size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-                  <div className="flex-1 min-w-0">
-                    <div className="sans font-bold text-sm" style={{ color: 'var(--primary)' }}>{it.title}</div>
-                    {it.time && <div className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{it.time}</div>}
-                  </div>
-                  <a href={it.mapUrl} target="_blank" rel="noreferrer" className="sans text-xs font-semibold" style={{ color: 'var(--accent)' }}>
-                    Open
-                  </a>
+                <div key={it.id} ref={el => cardRefs.current[it.id] = el}
+                  className="rounded-xl card-shadow overflow-hidden"
+                  style={{ background: 'var(--card)', border: isSelected ? '2px solid var(--accent)' : '1px solid var(--card-border)' }}>
+                  <button onClick={() => { if (isExpanded) { setExpandedId(null); setSelectedId(null); } else selectItem(it.id); }}
+                    className="w-full p-3 flex items-center gap-3 text-left">
+                    <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center sans font-bold text-xs"
+                      style={{ background: isSelected ? 'var(--accent)' : 'rgba(192,48,40,0.1)', color: isSelected ? 'var(--bg)' : 'var(--accent)' }}>{i + 1}</div>
+                    <Icon size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="sans font-bold text-sm truncate" style={{ color: 'var(--primary)' }}>{it.title}</div>
+                      {it.time && <div className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{it.time}</div>}
+                    </div>
+                    <StatusChip status={it.status} />
+                    {isExpanded ? <ChevronUp size={14} style={{ color: 'var(--text-soft)' }} /> : <ChevronDown size={14} style={{ color: 'var(--text-soft)' }} />}
+                  </button>
+                  {isExpanded && (
+                    <div className="px-4 pb-4 pt-1 border-t" style={{ borderColor: 'var(--card-border)' }}>
+                      {it.note && <div className="sans text-sm mt-2 leading-relaxed" style={{ color: 'var(--text)' }}>{it.note}</div>}
+                      {it.owner && it.owner !== 'EVERYONE' && (
+                        <div className="sans text-xs mt-1" style={{ color: 'var(--text-soft)' }}>
+                          {it.owner === 'TM' ? 'Tim & Michelle' : 'Caroline & David'}
+                        </div>
+                      )}
+                      <div className="flex gap-2 mt-3 flex-wrap">
+                        {it.mapUrl && (
+                          <a href={it.mapUrl} target="_blank" rel="noreferrer"
+                            className="sans text-xs font-bold px-3 py-1.5 rounded-full flex items-center gap-1"
+                            style={{ background: 'var(--accent)', color: 'var(--bg)' }}>
+                            <MapPin size={12} /> Open in Maps
+                          </a>
+                        )}
+                        {onNavigateToItem && (
+                          <button onClick={() => onNavigateToItem(it.id)}
+                            className="sans text-xs font-bold px-3 py-1.5 rounded-full flex items-center gap-1"
+                            style={{ background: 'var(--card)', border: '1px solid var(--card-border)', color: 'var(--primary)' }}>
+                            <Edit3 size={12} /> Edit item
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
-            {mappableItems.length === 0 && (
-              <div className="bg-white rounded-xl p-6 card-shadow text-center sans" style={{ color: 'var(--text-soft)' }}>
-                No mappable items on this day. Items need a Google Maps link to appear on the map.
-              </div>
+            {filteredItems.length === 0 && (
+              <div className="text-center sans text-sm py-6" style={{ color: 'var(--text-soft)' }}>No items for this filter.</div>
             )}
           </div>
         </>
