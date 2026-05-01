@@ -707,3 +707,13 @@ input, select, textarea { font-family: 'Inter', sans-serif; }
 .map-container * {
   touch-action: auto;
 }
+
+/* ============ INPUT ZOOM FIX (iOS auto-zoom on focus) ============ */
+/* iOS zooms into inputs with font-size < 16px — force minimum */
+input, select, textarea {
+  font-size: 16px !important;
+}
+/* But keep number inputs compact visually via transform */
+input[type="number"] {
+  font-size: 16px !important;
+}
