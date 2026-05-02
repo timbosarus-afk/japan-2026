@@ -2544,21 +2544,31 @@ function ConnectorEditor({ form, setForm, dayItems }) {
             </div>
           )}
 
-          {/* Check in Google Maps — uses place names for reliable routing */}
+          {/* Check in Google Maps — uses stored map URL query for precise location */}
           {(() => {
             const getLocation = (url, name) => {
-              if (!url && !name) return null;
-              // Try coordinates from URL first
-              const coords = (url || '').match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-              if (coords) return `${coords[1]},${coords[2]}`;
-              // Use the display name + Japan for named places
-              return name ? `${name} Japan` : null;
+              if (!url && !name) return '';
+              if (url) {
+                // Direct coordinates — most precise
+                const coords = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+                if (coords) return `${coords[1]},${coords[2]}`;
+                // Extract query from URL — use as-is, it's already a precise place name
+                try {
+                  const m = url.match(/[?&]query=([^&]+)/);
+                  if (m) return decodeURIComponent(m[1].replace(/\+/g, ' '));
+                  const u = new URL(url);
+                  const q = u.searchParams.get('query') || u.searchParams.get('q');
+                  if (q) return decodeURIComponent(q);
+                } catch {}
+              }
+              // Last resort — display name
+              return name || '';
             };
             const from = getLocation(form.fromUrl, form.fromName);
             const to = getLocation(form.toUrl, form.toName);
             const modeMap = { walk: 'walking', transit: 'transit', taxi: 'driving', drive: 'driving', boat: 'transit', train: 'transit' };
             const travelmode = modeMap[form.mode || 'transit'] || 'transit';
-            const url = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(from || '')}&destination=${encodeURIComponent(to || '')}&travelmode=${travelmode}`;
+            const url = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(from)}&destination=${encodeURIComponent(to)}&travelmode=${travelmode}`;
             return (
               <a href={url} target="_blank" rel="noreferrer"
                 className="sans w-full py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1 mb-1"
