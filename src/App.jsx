@@ -144,6 +144,7 @@ function migrate(data) {
       places: it.places || [],
       files: it.files || [],
       owner: it.owner || 'EVERYONE',
+      legs: it.legs || [],
     })),
   }));
 
@@ -629,6 +630,7 @@ export default function App() {
               itemId={activeItem.itemId}
               onBack={() => setActiveItem(null)}
               onSave={persist}
+              defaultEdit={activeItem.defaultEdit}
             />
           ) : activeDay ? (
             <DayDetailTab
@@ -636,7 +638,7 @@ export default function App() {
               dayId={activeDay}
               onBack={() => setActiveDay(null)}
               onSave={persist}
-              onOpenItem={(itemId) => setActiveItem({ dayId: activeDay, itemId })}
+              onOpenItem={(itemId, defaultEdit) => setActiveItem({ dayId: activeDay, itemId, defaultEdit: !!defaultEdit })}
               onOpenBooking={(bookingId) => { setTab('bookings'); setTimeout(() => setDayLinkedBooking(bookingId), 50); setActiveDay(null); }}
             />
           ) : (
@@ -1576,7 +1578,7 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
             <React.Fragment key={item.id}>
               <DayItemCard item={item} isPinned={false} onClick={() => onOpenItem(item.id)} onTogglePin={() => togglePin(item.id)} />
               {showConnector && connectorItem && (
-                <ConnectorPill item={connectorItem} onClick={() => onOpenItem(connectorItem.id)} />
+                <ConnectorPill item={connectorItem} onClick={() => onOpenItem(connectorItem.id, true)} />
               )}
             </React.Fragment>
           );
@@ -2120,10 +2122,10 @@ function BookingMiniCard({ booking }) {
 }
 
 /* ========================= ITEM DETAIL PAGE ========================= */
-function ItemDetailPage({ data, dayId, itemId, onBack, onSave }) {
+function ItemDetailPage({ data, dayId, itemId, onBack, onSave, defaultEdit }) {
   const day = data.days.find(d => d.id === dayId);
   const item = day?.items.find(i => i.id === itemId);
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(defaultEdit || false);
   const [form, setForm] = useState(item || {});
   const [uploading, setUploading] = useState(false);
 
@@ -2403,23 +2405,46 @@ function ConnectorPill({ item, onClick }) {
   const mode = TRANSPORT_MODES[item.mode] || TRANSPORT_MODES.transit;
   const duration = item.duration;
   const lineName = item.lineName;
+  const legs = item.legs || [];
+  const hasLegs = legs.length > 0 && legs.some(l => l.durationMin > 0);
 
   return (
     <div className="connector-pill-wrap">
       <div className="connector-pill-line" />
       <button className="connector-pill-new" onClick={onClick}>
-        <div className="connector-pill-legs">
-          <span className="connector-leg-group">
-            <span>{mode.icon}</span>
-            {duration
-              ? <span className="connector-time">{duration} min</span>
-              : <span className="connector-tap">Tap to set time</span>
-            }
-            {lineName && (
-              <span className="connector-line" style={{ background: '#1e2a4a', color: '#fff' }}>{lineName}</span>
-            )}
-          </span>
-        </div>
+        {hasLegs ? (
+          <>
+            <div className="connector-pill-legs">
+              {legs.map((leg, i) => {
+                const m = TRANSPORT_MODES[leg.type] || TRANSPORT_MODES.transit;
+                return (
+                  <span key={i} className="connector-leg-group">
+                    {i > 0 && <span className="connector-arrow"> › </span>}
+                    <span>{m.icon}</span>
+                    <span className="connector-time">{leg.durationMin}m</span>
+                    {leg.lineName && (
+                      <span className="connector-line" style={{ background: '#1e2a4a', color: '#fff' }}>{leg.lineName}</span>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+            {duration && <div className="connector-pill-total">{duration} min total</div>}
+          </>
+        ) : (
+          <div className="connector-pill-legs">
+            <span className="connector-leg-group">
+              <span>{mode.icon}</span>
+              {duration
+                ? <span className="connector-time">{duration} min</span>
+                : <span className="connector-tap">Tap to set time</span>
+              }
+              {lineName && (
+                <span className="connector-line" style={{ background: '#1e2a4a', color: '#fff' }}>{lineName}</span>
+              )}
+            </span>
+          </div>
+        )}
       </button>
       <div className="connector-pill-line" />
     </div>
@@ -2519,31 +2544,98 @@ function ConnectorEditor({ form, setForm, dayItems }) {
             </div>
           )}
 
-          {/* Quick check link */}
-          {form.fromUrl && form.toUrl && (
-            <a
-              href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(form.fromName || '')}&destination=${encodeURIComponent(form.toName || '')}&travelmode=transit`}
-              target="_blank"
-              rel="noreferrer"
-              className="sans w-full py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1 mb-1"
-              style={{ background: 'var(--card)', border: '1px solid var(--card-border)', color: 'var(--primary)' }}
-            >
-              <MapPin size={14} /> Check route in Google Maps
-            </a>
-          )}
-          {(!form.fromUrl || !form.toUrl) && (
-            <a
-              href={`https://www.google.com/maps/dir/${encodeURIComponent(form.fromName || '')}/${encodeURIComponent(form.toName || '')}`}
-              target="_blank"
-              rel="noreferrer"
-              className="sans w-full py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1 mb-1"
-              style={{ background: 'var(--card)', border: '1px solid var(--card-border)', color: 'var(--primary)' }}
-            >
-              <MapPin size={14} /> Check route in Google Maps
-            </a>
-          )}
+          {/* Check in Google Maps — uses actual map URLs if available, else names */}
+          {(() => {
+            const fromParam = form.fromUrl
+              ? (() => {
+                  const coords = form.fromUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+                  if (coords) return `${coords[1]},${coords[2]}`;
+                  const m = form.fromUrl.match(/[?&]query=([^&]+)/);
+                  if (m) return decodeURIComponent(m[1]);
+                  return encodeURIComponent(form.fromName || '');
+                })()
+              : encodeURIComponent(form.fromName || '');
+            const toParam = form.toUrl
+              ? (() => {
+                  const coords = form.toUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+                  if (coords) return `${coords[1]},${coords[2]}`;
+                  const m = form.toUrl.match(/[?&]query=([^&]+)/);
+                  if (m) return decodeURIComponent(m[1]);
+                  return encodeURIComponent(form.toName || '');
+                })()
+              : encodeURIComponent(form.toName || '');
+            const modeMap = { walk: 'walking', transit: 'transit', taxi: 'driving', drive: 'driving', boat: 'transit', train: 'transit' };
+            const travelmode = modeMap[form.mode || 'transit'] || 'transit';
+            const url = `https://www.google.com/maps/dir/?api=1&origin=${fromParam}&destination=${toParam}&travelmode=${travelmode}`;
+            return (
+              <a href={url} target="_blank" rel="noreferrer"
+                className="sans w-full py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1 mb-1"
+                style={{ background: 'var(--card)', border: '1px solid var(--card-border)', color: 'var(--primary)' }}>
+                <MapPin size={14} /> Check route in Google Maps
+              </a>
+            );
+          })()}
 
-          {/* From / To names for display */}
+          {/* Manual leg builder */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="sans text-[10px] uppercase tracking-wider font-bold" style={{ color: 'var(--text-soft)' }}>Journey legs (optional)</div>
+              <button onClick={() => set('legs', [...(form.legs || []), { type: 'walk', icon: '🚶', durationMin: '', lineName: '' }])}
+                className="sans text-[10px] font-bold px-2 py-1 rounded-full flex items-center gap-1"
+                style={{ background: 'var(--accent)', color: 'var(--bg)' }}>
+                <Plus size={10} /> Add leg
+              </button>
+            </div>
+            {(form.legs || []).length === 0 && (
+              <div className="sans text-[11px] italic" style={{ color: 'var(--text-soft)' }}>Add legs to show breakdown e.g. 🚶 8m › 🚇 25m · Keikyu › 🚶 4m</div>
+            )}
+            <div className="space-y-2">
+              {(form.legs || []).map((leg, i) => (
+                <div key={i} className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+                  <select value={leg.type || 'walk'} onChange={e => {
+                    const m = TRANSPORT_MODES[e.target.value];
+                    const newLegs = [...(form.legs || [])];
+                    newLegs[i] = { ...leg, type: e.target.value, icon: m?.icon || '🚶' };
+                    set('legs', newLegs);
+                  }} className="sans p-1 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)', width: 90 }}>
+                    {Object.entries(TRANSPORT_MODES).map(([key, m]) => (
+                      <option key={key} value={key}>{m.icon} {m.label}</option>
+                    ))}
+                  </select>
+                  <input type="number" value={leg.durationMin || ''} onChange={e => {
+                    const newLegs = [...(form.legs || [])];
+                    newLegs[i] = { ...leg, durationMin: parseInt(e.target.value) || 0 };
+                    set('legs', newLegs);
+                  }} placeholder="min" className="sans w-14 p-1 rounded border text-sm text-center" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+                  {(leg.type === 'transit' || leg.type === 'train') && (
+                    <input value={leg.lineName || ''} onChange={e => {
+                      const newLegs = [...(form.legs || [])];
+                      newLegs[i] = { ...leg, lineName: e.target.value };
+                      set('legs', newLegs);
+                    }} placeholder="Line name" className="sans flex-1 p-1 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+                  )}
+                  {leg.type !== 'transit' && leg.type !== 'train' && <div className="flex-1" />}
+                  <button onClick={() => {
+                    const newLegs = [...(form.legs || [])];
+                    newLegs.splice(i, 1);
+                    set('legs', newLegs);
+                  }} className="btn-delete" style={{ width: 28, height: 28, minWidth: 28, minHeight: 28 }}><Trash2 size={12} /></button>
+                </div>
+              ))}
+            </div>
+            {(form.legs || []).length > 0 && (
+              <div className="sans text-[11px] mt-2 font-semibold" style={{ color: 'var(--text-soft)' }}>
+                Total: {(form.legs || []).reduce((sum, l) => sum + (parseInt(l.durationMin) || 0), 0)} min
+                {form.duration && form.duration !== (form.legs || []).reduce((sum, l) => sum + (parseInt(l.durationMin) || 0), 0) && (
+                  <button onClick={() => set('duration', (form.legs || []).reduce((sum, l) => sum + (parseInt(l.durationMin) || 0), 0))}
+                    className="ml-2 sans text-[10px] font-bold px-2 py-0.5 rounded-full"
+                    style={{ background: 'rgba(192,48,40,0.1)', color: 'var(--accent)' }}>
+                    Sync to journey time
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-2 mt-3">
             <div>
               <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>From (display name)</div>
