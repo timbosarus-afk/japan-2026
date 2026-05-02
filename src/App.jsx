@@ -1576,7 +1576,7 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
             <React.Fragment key={item.id}>
               <DayItemCard item={item} isPinned={false} onClick={() => onOpenItem(item.id)} onTogglePin={() => togglePin(item.id)} />
               {showConnector && connectorItem && (
-                <ConnectorPill item={connectorItem} fromItem={item} toItem={nextItem} onClick={() => onOpenItem(connectorItem.id)} />
+                <ConnectorPill item={connectorItem} onClick={() => onOpenItem(connectorItem.id)} />
               )}
             </React.Fragment>
           );
@@ -1643,9 +1643,10 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
       const el = cardRefs.current[id];
       const list = listRef.current;
       if (el && list) {
-        list.scrollTo({ top: el.offsetTop - 8, behavior: 'smooth' });
+        // Always scroll to top of list regardless of position - even leaves blank space below
+        list.scrollTo({ top: el.offsetTop, behavior: 'smooth' });
       }
-    }, 80);
+    }, 150);
   };
 
   const zoomToItem = (id) => {
@@ -1932,20 +1933,20 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
 
   return (
     <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 120px)' }}>
-      <button onClick={onBack} className="sans flex items-center gap-1 text-xs mb-3 font-semibold flex-shrink-0" style={{ color: 'var(--accent)' }}>
-        <ChevronLeft size={14} /> Back to {day.title}
-      </button>
-
-      {/* Filter row */}
-      <div className="flex gap-2 mb-3 items-center flex-shrink-0">
-        {[['all', 'All'], ['TM', 'T&M'], ['CD', 'C&D']].map(([val, label]) => (
-          <button key={val} onClick={() => { setGroupFilter(val); setSelectedId(null); setExpandedId(null); setSelectedSubPlace(null); }}
-            className={"filter-pill sans " + (groupFilter === val ? 'active' : '')}>{label}</button>
-        ))}
-        <div className="flex-1" />
-        <button onClick={recenter} className="sans text-xs font-bold px-2 py-1 rounded-full flex items-center gap-1"
+      {/* Compact sticky header — back + filters + recenter all on one row */}
+      <div className="flex-shrink-0 flex items-center gap-2 mb-2 pb-2" style={{ borderBottom: '1px solid var(--card-border)' }}>
+        <button onClick={onBack} className="sans flex items-center gap-0.5 text-xs font-semibold flex-shrink-0" style={{ color: 'var(--accent)' }}>
+          <ChevronLeft size={13} /> Back
+        </button>
+        <div className="flex gap-1 flex-1">
+          {[['all', 'All'], ['TM', 'T&M'], ['CD', 'C&D']].map(([val, label]) => (
+            <button key={val} onClick={() => { setGroupFilter(val); setSelectedId(null); setExpandedId(null); setSelectedSubPlace(null); }}
+              className={"filter-pill sans " + (groupFilter === val ? 'active' : '')} style={{ padding: '3px 8px', fontSize: 11 }}>{label}</button>
+          ))}
+        </div>
+        <button onClick={recenter} className="sans text-[10px] font-bold px-2 py-1 rounded-full flex items-center gap-1 flex-shrink-0"
           style={{ background: 'var(--card)', border: '1px solid var(--card-border)', color: 'var(--primary)' }}>
-          <MapIcon size={12} /> Recenter
+          <MapIcon size={11} /> Recenter
         </button>
       </div>
 
@@ -2394,23 +2395,50 @@ const TRANSPORT_MODES = {
   transit: { icon: '🚇', label: 'Transit', g: 'transit' },
   taxi:    { icon: '🚕', label: 'Taxi',    g: 'driving' },
   drive:   { icon: '🚗', label: 'Drive',   g: 'driving' },
-  boat:    { icon: '🚢', label: 'Boat',    g: 'transit' },
-  train:   { icon: '🚂', label: 'Train',   g: 'transit' },
+  boat:    { icon: '🚢', label: 'Boat',    g: 'transit' },  // transit handles ferries
+  train:   { icon: '🚂', label: 'Train',   g: 'transit' },  // transit handles trains
 };
 
-function ConnectorPill({ item, fromItem, toItem, onClick }) {
+function ConnectorPill({ item, onClick }) {
   const mode = TRANSPORT_MODES[item.mode] || TRANSPORT_MODES.transit;
-  const duration = item.duration ? `${item.duration} min` : '—';
-  const fromLabel = item.fromName || fromItem?.title || 'From';
-  const toLabel = item.toName || toItem?.title || 'To';
-  const truncate = (s, n) => s && s.length > n ? s.slice(0, n) + '…' : (s || '');
+  const legs = item.legs || []; // stored from Directions API
+  const duration = item.duration;
+  const hasLegs = legs.length > 0;
+
+  // Build leg display
+  const renderLegs = () => {
+    if (!hasLegs) {
+      // Simple display — just mode icon + time
+      return (
+        <span className="connector-legs">
+          <span>{mode.icon}</span>
+          {duration ? <span className="connector-time">{duration} min</span> : <span className="connector-tap">Tap to set time</span>}
+        </span>
+      );
+    }
+    // Multi-leg display with arrows
+    return (
+      <span className="connector-legs">
+        {legs.map((leg, i) => (
+          <span key={i} className="connector-leg-group">
+            {i > 0 && <span className="connector-arrow"> › </span>}
+            <span>{leg.icon || (leg.type === 'WALKING' ? '🚶' : '🚇')}</span>
+            <span className="connector-time">{leg.durationMin}m</span>
+            {leg.lineName && <span className="connector-line" style={{ background: leg.lineColor || '#1e2a4a', color: '#fff' }}>{leg.lineName}</span>}
+          </span>
+        ))}
+      </span>
+    );
+  };
+
   return (
     <div className="connector-pill-wrap">
       <div className="connector-pill-line" />
-      <button className="connector-pill" onClick={onClick}>
-        <span className="mode-icon">{mode.icon}</span>
-        <span className="mode-meta">{duration}</span>
-        <span style={{ opacity: 0.7 }}>· {truncate(fromLabel, 16)} → {truncate(toLabel, 16)}</span>
+      <button className="connector-pill-new" onClick={onClick}>
+        <div className="connector-pill-legs">{renderLegs()}</div>
+        {hasLegs && duration && (
+          <div className="connector-pill-total">{duration} min total</div>
+        )}
       </button>
       <div className="connector-pill-line" />
     </div>
@@ -2440,7 +2468,9 @@ function ConnectorEditor({ form, setForm, dayItems }) {
           ...form,
           duration: result.durationMin,
           distance: result.distanceKm,
+          legs: result.legs || [],
         });
+        setCalcError(null); // clear any previous error
         haptic(15);
       } else {
         setCalcError('Could not calculate route. Check URLs.');
@@ -2547,10 +2577,10 @@ async function calculateRoute(fromUrl, toUrl, mode) {
       return u.searchParams.get('query') || u.searchParams.get('q');
     } catch { return null; }
   };
-  const resolve = async (url) => {
+  const resolve = async (url, fallbackTitle) => {
     const coords = extractCoords(url);
     if (coords) return new maps.LatLng(coords.lat, coords.lng);
-    const q = extractQuery(url);
+    const q = extractQuery(url) || (fallbackTitle ? `${fallbackTitle} Japan` : null);
     if (!q) return null;
     return new Promise((res) => {
       const g = new maps.Geocoder();
@@ -2565,7 +2595,7 @@ async function calculateRoute(fromUrl, toUrl, mode) {
   if (!origin || !destination) throw new Error('Could not resolve From or To location.');
 
   const ds = new maps.DirectionsService();
-  const gMode = TRANSPORT_MODES[mode]?.g || 'TRANSIT';
+  const gMode = TRANSPORT_MODES[mode]?.g || 'transit';
   const travelMode = gMode === 'walking' ? maps.TravelMode.WALKING
     : gMode === 'driving' ? maps.TravelMode.DRIVING
     : maps.TravelMode.TRANSIT;
@@ -2574,10 +2604,32 @@ async function calculateRoute(fromUrl, toUrl, mode) {
     ds.route({ origin, destination, travelMode }, (result, status) => {
       if (status === 'OK' && result?.routes?.[0]?.legs?.[0]) {
         const leg = result.routes[0].legs[0];
-        res({
-          durationMin: Math.round(leg.duration.value / 60),
-          distanceKm: +(leg.distance.value / 1000).toFixed(1),
-        });
+        const totalMin = Math.round(leg.duration.value / 60);
+        const distanceKm = +(leg.distance.value / 1000).toFixed(1);
+
+        // Extract individual steps for the leg breakdown
+        const legs = [];
+        if (leg.steps) {
+          leg.steps.forEach(step => {
+            const stepMin = Math.round(step.duration.value / 60);
+            if (stepMin < 1) return; // skip trivial steps
+            if (step.travel_mode === 'WALKING') {
+              legs.push({ type: 'WALKING', icon: '🚶', durationMin: stepMin });
+            } else if (step.travel_mode === 'TRANSIT' && step.transit) {
+              const t = step.transit;
+              const line = t.line;
+              legs.push({
+                type: 'TRANSIT',
+                icon: '🚇',
+                durationMin: stepMin,
+                lineName: line?.short_name || line?.name || null,
+                lineColor: line?.color ? `#${line.color}` : '#1e2a4a',
+              });
+            }
+          });
+        }
+
+        res({ durationMin: totalMin, distanceKm, legs });
       } else {
         rej(new Error('Directions API: ' + status));
       }
