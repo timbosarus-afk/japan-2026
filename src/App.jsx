@@ -2726,17 +2726,22 @@ function ConnectorEditor({ form, setForm, dayItems }) {
             // From candidates: any item compatible with owner
             const fromCandidates = sortedItems.filter(i => ownerCompatible(i.owner, form.owner));
 
-            // To candidates: items that come AFTER the From item (by sort position)
-            // AND are compatible with owner
+            // To candidates: ONLY the immediately next compatible item(s) after From
+            // If multiple items share the same time, show all of them as options
             let toCandidates = [];
             if (form.fromId) {
               const fromIdx = sortedItems.findIndex(i => i.id === form.fromId);
               if (fromIdx >= 0) {
-                // Show only the items immediately after From — limit to next 3 to keep it focused
-                toCandidates = sortedItems
+                const remaining = sortedItems
                   .slice(fromIdx + 1)
-                  .filter(i => ownerCompatible(i.owner, form.owner))
-                  .slice(0, 5);
+                  .filter(i => ownerCompatible(i.owner, form.owner));
+                if (remaining.length > 0) {
+                  // Only the immediately next item, plus any items at the same time as it
+                  const firstTime = remaining[0].time;
+                  toCandidates = remaining.filter(i => i.time === firstTime || (!firstTime && !i.time));
+                  // Always show at least the first item
+                  if (toCandidates.length === 0) toCandidates = [remaining[0]];
+                }
               }
             } else {
               // No From picked yet — show all compatible items
