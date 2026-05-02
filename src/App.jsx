@@ -139,14 +139,44 @@ function migrate(data) {
     diary: day.diary || '',
     dayBagExtras: day.dayBagExtras || [],
     dayBagDone: day.dayBagDone || {},
-    items: (day.items || []).map(it => ({
-      ...it,
-      places: it.places || [],
-      files: it.files || [],
-      owner: it.owner || 'EVERYONE',
-      legs: it.legs || [],
-    })),
+    items: (day.items || []).map(it => {
+      const base = {
+        ...it,
+        places: it.places || [],
+        files: it.files || [],
+        owner: it.owner || 'EVERYONE',
+        legs: it.legs || [],
+        address: it.address || '',
+      };
+      // Auto-generate map URL from address if address set and no URL
+      if (base.address && !base.mapUrl) {
+        base.mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(base.address)}`;
+      }
+      return base;
+    }),
   }));
+
+  // Second pass — migrate old connectors that have fromName/toName but no fromId/toId
+  d.days = d.days.map(day => {
+    const items = day.items || [];
+    const updatedItems = items.map(it => {
+      if (it.connector && (!it.fromId || !it.toId)) {
+        const updated = { ...it };
+        // Try to find an item by exact name match
+        if (!updated.fromId && updated.fromName) {
+          const match = items.find(i => !i.connector && i.title === updated.fromName);
+          if (match) updated.fromId = match.id;
+        }
+        if (!updated.toId && updated.toName) {
+          const match = items.find(i => !i.connector && i.title === updated.toName);
+          if (match) updated.toId = match.id;
+        }
+        return updated;
+      }
+      return it;
+    });
+    return { ...day, items: updatedItems };
+  });
 
   // Packing T&M — migrate, preserve note + quantity if present
   d.packing = (d.packing || []).map(p => {
@@ -1418,7 +1448,25 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
   const pinnedSet = new Set(day.pinned || []);
   const allFiltered = filterItems(day.items);
   const pinnedItems = (day.pinned || []).map(id => day.items.find(i => i.id === id)).filter(Boolean).filter(i => allFiltered.includes(i));
-  const unpinnedItems = allFiltered.filter(i => !pinnedSet.has(i.id)).sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ'));
+
+  // Separate connectors from regular items — connectors render by position not time
+  const allConnectors = day.items.filter(i => i.connector);
+  // Filter visible items (excluding connectors) and sort by time
+  const unpinnedItems = allFiltered.filter(i => !pinnedSet.has(i.id) && !i.connector).sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ'));
+
+  // Build a map: for each visible regular item, find connectors whose fromId === this item AND whose toId is also visible
+  const visibleItemIds = new Set(allFiltered.map(i => i.id));
+  const connectorsAfterItem = (itemId) => {
+    return allConnectors.filter(c =>
+      c.fromId === itemId &&
+      visibleItemIds.has(c.toId) &&
+      // Owner of connector must be compatible with current filter
+      allFiltered.includes(c)
+    );
+  };
+
+  // Whether to show owner badge on connector pills (only when in All view AND multiple connectors visible from same point)
+  const showOwnerBadgeOnPill = !groupFilter.tm && !groupFilter.cd;
 
   const importantTimes = day.items
     .filter(i => !i.connector && i.time && /^\d{2}:\d{2}/.test(i.time) && (i.status === 'confirmed' || i.status === 'booked'))
@@ -1556,30 +1604,19 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
           </div>
         )}
         {unpinnedItems.map((item, idx) => {
-          if (item.connector) return null;
-          // Find index of next non-connector item
-          const nextIdx = unpinnedItems.findIndex((i, j) => j > idx && !i.connector);
-          const nextItem = nextIdx >= 0 ? unpinnedItems[nextIdx] : null;
-          // Only show connector if owners are compatible
-          const showConnector = nextItem &&
-            (item.owner === nextItem.owner || item.owner === 'EVERYONE' || nextItem.owner === 'EVERYONE');
-          // Look for a connector item ONLY in the gap between this item and the next non-connector
-          let connectorItem = null;
-          if (showConnector && nextIdx > idx + 1) {
-            // There are items between this and next — look for connector among them
-            for (let j = idx + 1; j < nextIdx; j++) {
-              if (unpinnedItems[j]?.connector) { connectorItem = unpinnedItems[j]; break; }
-            }
-          } else if (showConnector) {
-            // Items are adjacent — check if there's a connector item sorted between them by time
-            connectorItem = null; // no gap, no connector to show
-          }
+          // Find all connectors that originate from this item AND whose To is visible
+          const itemConnectors = connectorsAfterItem(item.id);
           return (
             <React.Fragment key={item.id}>
               <DayItemCard item={item} isPinned={false} onClick={() => onOpenItem(item.id)} onTogglePin={() => togglePin(item.id)} />
-              {showConnector && connectorItem && (
-                <ConnectorPill item={connectorItem} onClick={() => onOpenItem(connectorItem.id, true)} />
-              )}
+              {itemConnectors.map(connectorItem => (
+                <ConnectorPill
+                  key={connectorItem.id}
+                  item={connectorItem}
+                  showOwnerBadge={showOwnerBadgeOnPill && itemConnectors.length > 1}
+                  onClick={() => onOpenItem(connectorItem.id, true)}
+                />
+              ))}
             </React.Fragment>
           );
         })}
@@ -2376,8 +2413,33 @@ function ItemDetailPage({ data, dayId, itemId, onBack, onSave, defaultEdit }) {
       <Field label="Notes">
         <textarea value={form.note || ''} onChange={e => setForm({ ...form, note: e.target.value })} rows={4} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
       </Field>
+
+      <Field label="Address">
+        <input
+          value={form.address || ''}
+          onChange={e => {
+            const newAddress = e.target.value;
+            const updated = { ...form, address: newAddress };
+            // Auto-generate map URL if empty or was previously generated from address
+            if (newAddress && !form.mapUrl) {
+              updated.mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(newAddress)}`;
+            }
+            setForm(updated);
+          }}
+          placeholder="e.g. 2-1-1 Higashi-Shinagawa, Shinagawa"
+          className="sans w-full p-3 rounded border text-base"
+          style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }}
+        />
+        <div className="sans text-xs mt-1" style={{ color: 'var(--text-soft)' }}>Used for precise routing in connector pills. Auto-fills the map URL if empty.</div>
+      </Field>
+
       <Field label="Google Maps URL">
         <input value={form.mapUrl || ''} onChange={e => setForm({ ...form, mapUrl: e.target.value })} className="sans w-full p-3 rounded border text-base" style={{ borderColor: 'var(--card-border)', background: 'var(--paper)', color: 'var(--text)' }} />
+        {form.mapUrl && (form.mapUrl.includes('maps.app.goo.gl') || form.mapUrl.includes('goo.gl/maps')) && (
+          <div className="sans text-xs mt-1 p-2 rounded" style={{ background: 'rgba(184, 146, 61, 0.15)', color: 'var(--gold)' }}>
+            ⚠ Short link detected. This works for "Check route" but may not work for the in-app map pin. Use the full URL for best results.
+          </div>
+        )}
         <button onClick={autoMap} className="sans text-xs font-semibold mt-2" style={{ color: 'var(--accent)' }}>Auto-generate from title</button>
       </Field>
 
@@ -2401,12 +2463,13 @@ const TRANSPORT_MODES = {
   train:   { icon: '🚂', label: 'Train',   g: 'transit' },  // transit handles trains
 };
 
-function ConnectorPill({ item, onClick }) {
+function ConnectorPill({ item, onClick, showOwnerBadge }) {
   const mode = TRANSPORT_MODES[item.mode] || TRANSPORT_MODES.transit;
   const duration = item.duration;
   const lineName = item.lineName;
   const legs = item.legs || [];
   const hasLegs = legs.length > 0 && legs.some(l => l.durationMin > 0);
+  const ownerLabel = item.owner === 'TM' ? 'T&M' : item.owner === 'CD' ? 'C&D' : null;
 
   return (
     <div className="connector-pill-wrap">
@@ -2429,7 +2492,7 @@ function ConnectorPill({ item, onClick }) {
                 );
               })}
             </div>
-            {duration && <div className="connector-pill-total">{duration} min total</div>}
+            {duration && <div className="connector-pill-total">{duration} min total{showOwnerBadge && ownerLabel ? ` · ${ownerLabel}` : ''}</div>}
           </>
         ) : (
           <div className="connector-pill-legs">
@@ -2441,6 +2504,9 @@ function ConnectorPill({ item, onClick }) {
               }
               {lineName && (
                 <span className="connector-line" style={{ background: '#1e2a4a', color: '#fff' }}>{lineName}</span>
+              )}
+              {showOwnerBadge && ownerLabel && (
+                <span className="connector-line" style={{ background: 'var(--accent)', color: 'var(--bg)' }}>{ownerLabel}</span>
               )}
             </span>
           </div>
@@ -2544,15 +2610,18 @@ function ConnectorEditor({ form, setForm, dayItems }) {
             </div>
           )}
 
-          {/* Check in Google Maps — uses stored map URL query for precise location */}
+          {/* Check in Google Maps — uses address > coords > query > name */}
           {(() => {
-            const getLocation = (url, name) => {
-              if (!url && !name) return '';
+            const isShortLink = (url) => url && (url.includes('maps.app.goo.gl') || url.includes('goo.gl/maps'));
+            const getLocation = (url, name, address) => {
+              // If short link, pass it through directly — Google Maps resolves its own
+              if (isShortLink(url)) return url;
+              if (address) return address;
               if (url) {
                 // Direct coordinates — most precise
                 const coords = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
                 if (coords) return `${coords[1]},${coords[2]}`;
-                // Extract query from URL — use as-is, it's already a precise place name
+                // Extract query from URL
                 try {
                   const m = url.match(/[?&]query=([^&]+)/);
                   if (m) return decodeURIComponent(m[1].replace(/\+/g, ' '));
@@ -2561,11 +2630,10 @@ function ConnectorEditor({ form, setForm, dayItems }) {
                   if (q) return decodeURIComponent(q);
                 } catch {}
               }
-              // Last resort — display name
               return name || '';
             };
-            const from = getLocation(form.fromUrl, form.fromName);
-            const to = getLocation(form.toUrl, form.toName);
+            const from = getLocation(form.fromUrl, form.fromName, form.fromAddress);
+            const to = getLocation(form.toUrl, form.toName, form.toAddress);
             const modeMap = { walk: 'walking', transit: 'transit', taxi: 'driving', drive: 'driving', boat: 'transit', train: 'transit' };
             const travelmode = modeMap[form.mode || 'transit'] || 'transit';
             const url = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(from)}&destination=${encodeURIComponent(to)}&travelmode=${travelmode}`;
@@ -2638,34 +2706,107 @@ function ConnectorEditor({ form, setForm, dayItems }) {
               </div>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-2 mt-3">
-            <div>
-              <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>From (display name)</div>
-              <input value={form.fromName || ''} onChange={e => set('fromName', e.target.value)} placeholder="From" className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
-              {pickableItems.length > 0 && (
-                <select value="" onChange={e => {
-                  const picked = pickableItems.find(i => i.id === e.target.value);
-                  if (picked) setForm({ ...form, fromName: picked.title, fromUrl: picked.mapUrl });
-                }} className="sans w-full p-1 rounded border text-[10px] mt-1" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }}>
-                  <option value="">— Pick from day —</option>
-                  {pickableItems.map(i => <option key={i.id} value={i.id}>{i.title}</option>)}
-                </select>
-              )}
-            </div>
-            <div>
-              <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>To (display name)</div>
-              <input value={form.toName || ''} onChange={e => set('toName', e.target.value)} placeholder="To" className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
-              {pickableItems.length > 0 && (
-                <select value="" onChange={e => {
-                  const picked = pickableItems.find(i => i.id === e.target.value);
-                  if (picked) setForm({ ...form, toName: picked.title, toUrl: picked.mapUrl });
-                }} className="sans w-full p-1 rounded border text-[10px] mt-1" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }}>
-                  <option value="">— Pick from day —</option>
-                  {pickableItems.map(i => <option key={i.id} value={i.id}>{i.title}</option>)}
-                </select>
-              )}
-            </div>
-          </div>
+          {/* Smart From/To picker */}
+          {(() => {
+            // Get all non-connector items in the day, sorted by time
+            const sortedItems = (dayItems || [])
+              .filter(i => i.id !== form.id && !i.connector)
+              .sort((a, b) => (a.time || 'ZZ').localeCompare(b.time || 'ZZ'));
+
+            // Owner compatibility check
+            const ownerCompatible = (itemOwner, connectorOwner) => {
+              if (!connectorOwner || connectorOwner === 'EVERYONE') {
+                // EVERYONE connector: only EVERYONE items
+                return itemOwner === 'EVERYONE';
+              }
+              // TM or CD connector: same owner OR EVERYONE
+              return itemOwner === connectorOwner || itemOwner === 'EVERYONE';
+            };
+
+            // From candidates: any item compatible with owner
+            const fromCandidates = sortedItems.filter(i => ownerCompatible(i.owner, form.owner));
+
+            // To candidates: items that come AFTER the From item (by sort position)
+            // AND are compatible with owner
+            let toCandidates = [];
+            if (form.fromId) {
+              const fromIdx = sortedItems.findIndex(i => i.id === form.fromId);
+              if (fromIdx >= 0) {
+                // Show only the items immediately after From — limit to next 3 to keep it focused
+                toCandidates = sortedItems
+                  .slice(fromIdx + 1)
+                  .filter(i => ownerCompatible(i.owner, form.owner))
+                  .slice(0, 5);
+              }
+            } else {
+              // No From picked yet — show all compatible items
+              toCandidates = fromCandidates;
+            }
+
+            const fromItem = sortedItems.find(i => i.id === form.fromId);
+            const toItem = sortedItems.find(i => i.id === form.toId);
+
+            return (
+              <div className="space-y-3 mt-3">
+                <div>
+                  <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>From</div>
+                  {fromItem ? (
+                    <div className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+                      <div className="flex-1 sans text-sm font-semibold" style={{ color: 'var(--primary)' }}>{fromItem.title}</div>
+                      <button onClick={() => setForm({ ...form, fromId: null, fromName: '', fromUrl: '' })}
+                        className="sans text-xs font-semibold" style={{ color: 'var(--accent)' }}>Change</button>
+                    </div>
+                  ) : (
+                    <select value="" onChange={e => {
+                      const picked = sortedItems.find(i => i.id === e.target.value);
+                      if (picked) setForm({ ...form, fromId: picked.id, fromName: picked.title, fromUrl: picked.mapUrl, fromAddress: picked.address || '' });
+                    }} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }}>
+                      <option value="">— Pick from day —</option>
+                      {fromCandidates.map(i => (
+                        <option key={i.id} value={i.id}>
+                          {i.time ? `${i.time} · ` : ''}{i.title}
+                          {i.owner !== 'EVERYONE' ? ` (${i.owner === 'TM' ? 'T&M' : 'C&D'})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                <div>
+                  <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>To</div>
+                  {toItem ? (
+                    <div className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
+                      <div className="flex-1 sans text-sm font-semibold" style={{ color: 'var(--primary)' }}>{toItem.title}</div>
+                      <button onClick={() => setForm({ ...form, toId: null, toName: '', toUrl: '' })}
+                        className="sans text-xs font-semibold" style={{ color: 'var(--accent)' }}>Change</button>
+                    </div>
+                  ) : (
+                    <select value="" onChange={e => {
+                      const picked = sortedItems.find(i => i.id === e.target.value);
+                      if (picked) setForm({ ...form, toId: picked.id, toName: picked.title, toUrl: picked.mapUrl, toAddress: picked.address || '' });
+                    }} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }}>
+                      <option value="">— Pick next stop —</option>
+                      {toCandidates.length === 0 && form.fromId && (
+                        <option value="" disabled>No items after From with matching owner</option>
+                      )}
+                      {toCandidates.map(i => (
+                        <option key={i.id} value={i.id}>
+                          {i.time ? `${i.time} · ` : ''}{i.title}
+                          {i.owner !== 'EVERYONE' ? ` (${i.owner === 'TM' ? 'T&M' : 'C&D'})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                {fromItem && toItem && (
+                  <div className="sans text-[11px] italic" style={{ color: 'var(--text-soft)' }}>
+                    Pill renders between these two items, regardless of time.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </>
       )}
     </div>
@@ -4626,4 +4767,3 @@ function FileList({ files, onRemove }) {
     </div>
   );
 }
-
