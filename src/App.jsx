@@ -2401,44 +2401,25 @@ const TRANSPORT_MODES = {
 
 function ConnectorPill({ item, onClick }) {
   const mode = TRANSPORT_MODES[item.mode] || TRANSPORT_MODES.transit;
-  const legs = item.legs || []; // stored from Directions API
   const duration = item.duration;
-  const hasLegs = legs.length > 0;
-
-  // Build leg display
-  const renderLegs = () => {
-    if (!hasLegs) {
-      // Simple display — just mode icon + time
-      return (
-        <span className="connector-legs">
-          <span>{mode.icon}</span>
-          {duration ? <span className="connector-time">{duration} min</span> : <span className="connector-tap">Tap to set time</span>}
-        </span>
-      );
-    }
-    // Multi-leg display with arrows
-    return (
-      <span className="connector-legs">
-        {legs.map((leg, i) => (
-          <span key={i} className="connector-leg-group">
-            {i > 0 && <span className="connector-arrow"> › </span>}
-            <span>{leg.icon || (leg.type === 'WALKING' ? '🚶' : '🚇')}</span>
-            <span className="connector-time">{leg.durationMin}m</span>
-            {leg.lineName && <span className="connector-line" style={{ background: leg.lineColor || '#1e2a4a', color: '#fff' }}>{leg.lineName}</span>}
-          </span>
-        ))}
-      </span>
-    );
-  };
+  const lineName = item.lineName;
 
   return (
     <div className="connector-pill-wrap">
       <div className="connector-pill-line" />
       <button className="connector-pill-new" onClick={onClick}>
-        <div className="connector-pill-legs">{renderLegs()}</div>
-        {hasLegs && duration && (
-          <div className="connector-pill-total">{duration} min total</div>
-        )}
+        <div className="connector-pill-legs">
+          <span className="connector-leg-group">
+            <span>{mode.icon}</span>
+            {duration
+              ? <span className="connector-time">{duration} min</span>
+              : <span className="connector-tap">Tap to set time</span>
+            }
+            {lineName && (
+              <span className="connector-line" style={{ background: '#1e2a4a', color: '#fff' }}>{lineName}</span>
+            )}
+          </span>
+        </div>
       </button>
       <div className="connector-pill-line" />
     </div>
@@ -2495,11 +2476,12 @@ function ConnectorEditor({ form, setForm, dayItems }) {
 
       {form.connector && (
         <>
-          <div className="mb-3">
-            <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>Mode</div>
+          {/* Mode — front and centre */}
+          <div className="mb-4">
+            <div className="sans text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: 'var(--text-soft)' }}>Mode</div>
             <div className="flex gap-2 flex-wrap">
               {Object.entries(TRANSPORT_MODES).map(([key, m]) => (
-                <button key={key} onClick={() => set('mode', key)} className="sans text-xs font-bold px-2 py-1 rounded-full flex items-center gap-1"
+                <button key={key} onClick={() => set('mode', key)} className="sans text-xs font-bold px-3 py-1.5 rounded-full flex items-center gap-1"
                   style={form.mode === key
                     ? { background: 'var(--accent)', color: 'var(--bg)' }
                     : { background: 'var(--card)', border: '1px solid var(--card-border)', color: 'var(--text)' }}>
@@ -2509,53 +2491,87 @@ function ConnectorEditor({ form, setForm, dayItems }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 mb-3">
+          {/* Time — the main field */}
+          <div className="mb-4">
+            <div className="sans text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: 'var(--text-soft)' }}>Journey time (minutes)</div>
+            <input
+              type="number"
+              value={form.duration || ''}
+              onChange={e => set('duration', parseInt(e.target.value) || 0)}
+              placeholder="e.g. 35"
+              className="sans w-full p-3 rounded-lg border text-lg font-bold"
+              style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }}
+            />
+            <div className="sans text-[11px] mt-1" style={{ color: 'var(--text-soft)' }}>Check Google Maps for the journey time, then enter it here.</div>
+          </div>
+
+          {/* Optional line name for transit */}
+          {(form.mode === 'transit' || form.mode === 'train') && (
+            <div className="mb-4">
+              <div className="sans text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: 'var(--text-soft)' }}>Line name (optional)</div>
+              <input
+                value={form.lineName || ''}
+                onChange={e => set('lineName', e.target.value)}
+                placeholder="e.g. Keikyu Line, Yurikamome"
+                className="sans w-full p-3 rounded-lg border text-sm"
+                style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }}
+              />
+            </div>
+          )}
+
+          {/* Quick check link */}
+          {form.fromUrl && form.toUrl && (
+            <a
+              href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(form.fromName || '')}&destination=${encodeURIComponent(form.toName || '')}&travelmode=transit`}
+              target="_blank"
+              rel="noreferrer"
+              className="sans w-full py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1 mb-1"
+              style={{ background: 'var(--card)', border: '1px solid var(--card-border)', color: 'var(--primary)' }}
+            >
+              <MapPin size={14} /> Check route in Google Maps
+            </a>
+          )}
+          {(!form.fromUrl || !form.toUrl) && (
+            <a
+              href={`https://www.google.com/maps/dir/${encodeURIComponent(form.fromName || '')}/${encodeURIComponent(form.toName || '')}`}
+              target="_blank"
+              rel="noreferrer"
+              className="sans w-full py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1 mb-1"
+              style={{ background: 'var(--card)', border: '1px solid var(--card-border)', color: 'var(--primary)' }}
+            >
+              <MapPin size={14} /> Check route in Google Maps
+            </a>
+          )}
+
+          {/* From / To names for display */}
+          <div className="grid grid-cols-2 gap-2 mt-3">
             <div>
-              <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>From</div>
-              <input value={form.fromName || ''} onChange={e => set('fromName', e.target.value)} placeholder="From name" className="sans w-full p-2 rounded border text-sm mb-1" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
-              <input value={form.fromUrl || ''} onChange={e => set('fromUrl', e.target.value)} placeholder="From map URL" className="sans w-full p-2 rounded border text-xs" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
+              <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>From (display name)</div>
+              <input value={form.fromName || ''} onChange={e => set('fromName', e.target.value)} placeholder="From" className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
               {pickableItems.length > 0 && (
                 <select value="" onChange={e => {
                   const picked = pickableItems.find(i => i.id === e.target.value);
                   if (picked) setForm({ ...form, fromName: picked.title, fromUrl: picked.mapUrl });
                 }} className="sans w-full p-1 rounded border text-[10px] mt-1" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }}>
-                  <option value="">— Pick from day items —</option>
+                  <option value="">— Pick from day —</option>
                   {pickableItems.map(i => <option key={i.id} value={i.id}>{i.title}</option>)}
                 </select>
               )}
             </div>
             <div>
-              <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>To</div>
-              <input value={form.toName || ''} onChange={e => set('toName', e.target.value)} placeholder="To name" className="sans w-full p-2 rounded border text-sm mb-1" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
-              <input value={form.toUrl || ''} onChange={e => set('toUrl', e.target.value)} placeholder="To map URL" className="sans w-full p-2 rounded border text-xs" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
+              <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>To (display name)</div>
+              <input value={form.toName || ''} onChange={e => set('toName', e.target.value)} placeholder="To" className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
               {pickableItems.length > 0 && (
                 <select value="" onChange={e => {
                   const picked = pickableItems.find(i => i.id === e.target.value);
                   if (picked) setForm({ ...form, toName: picked.title, toUrl: picked.mapUrl });
                 }} className="sans w-full p-1 rounded border text-[10px] mt-1" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }}>
-                  <option value="">— Pick from day items —</option>
+                  <option value="">— Pick from day —</option>
                   {pickableItems.map(i => <option key={i.id} value={i.id}>{i.title}</option>)}
                 </select>
               )}
             </div>
           </div>
-
-          <div className="grid grid-cols-2 gap-2 mb-3">
-            <div>
-              <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>Time (minutes)</div>
-              <input type="number" value={form.duration || ''} onChange={e => set('duration', parseInt(e.target.value) || 0)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
-            </div>
-            <div>
-              <div className="sans text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: 'var(--text-soft)' }}>Distance (km)</div>
-              <input type="number" step="0.1" value={form.distance || ''} onChange={e => set('distance', parseFloat(e.target.value) || 0)} className="sans w-full p-2 rounded border text-sm" style={{ borderColor: 'var(--card-border)', background: 'var(--card)', color: 'var(--text)' }} />
-            </div>
-          </div>
-
-          <button onClick={recalculate} disabled={calculating} className="w-full btn-accent sans py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1" style={{ opacity: calculating ? 0.6 : 1 }}>
-            {calculating ? 'Calculating…' : <><span>↻</span> Recalculate via Google Directions</>}
-          </button>
-          {calcError && <div className="sans text-xs mt-2" style={{ color: 'var(--accent)' }}>{calcError}</div>}
-          <div className="sans text-[10px] mt-2 italic" style={{ color: 'var(--text-soft)' }}>Recalculate uses Google Directions API. Time may differ from actual schedule.</div>
         </>
       )}
     </div>
