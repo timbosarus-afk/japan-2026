@@ -547,8 +547,16 @@ export default function App() {
     setActiveItem({ dayId, itemId });
   };
 
-  // Scroll to top on every navigation
-  useEffect(() => { window.scrollTo(0, 0); }, [tab, activeDay, activeItem]);
+  // Scroll to top on tab or day changes, but NOT when opening/closing an item
+  const prevTab = useRef(tab);
+  const prevDay = useRef(activeDay);
+  useEffect(() => {
+    const tabChanged = prevTab.current !== tab;
+    const dayChanged = prevDay.current !== activeDay;
+    prevTab.current = tab;
+    prevDay.current = activeDay;
+    if (tabChanged || dayChanged) window.scrollTo(0, 0);
+  }, [tab, activeDay, activeItem]);
 
   // Compute back action: prefers item -> day -> tab change
   const goBack = useMemo(() => {
@@ -660,7 +668,7 @@ export default function App() {
           tabBarOrder={tabBarOrder}
           currentTab={tab}
           onSelect={(id) => { setTab(id); setActiveDay(null); setActiveItem(null); }}
-          onMore={() => setMoreSheetOpen(true)}
+          onMore={() => setMoreSheetOpen(v => !v)}
         />
       )}
 
@@ -1546,26 +1554,29 @@ function DayDetailTab({ data, dayId, onBack, onSave, onOpenItem, onOpenBooking }
           </div>
         )}
         {unpinnedItems.map((item, idx) => {
-          // Hide connector items from this rendering — they appear as pills between cards
           if (item.connector) return null;
-          // Find next non-connector visible item with same/EVERYONE owner
-          const nextVisibleNonConnector = unpinnedItems.slice(idx + 1).find(i => !i.connector);
-          const showConnector = nextVisibleNonConnector
-            && (item.owner === nextVisibleNonConnector.owner || item.owner === 'EVERYONE' || nextVisibleNonConnector.owner === 'EVERYONE');
-          // Find a connector item between this and next
+          // Find index of next non-connector item
+          const nextIdx = unpinnedItems.findIndex((i, j) => j > idx && !i.connector);
+          const nextItem = nextIdx >= 0 ? unpinnedItems[nextIdx] : null;
+          // Only show connector if owners are compatible
+          const showConnector = nextItem &&
+            (item.owner === nextItem.owner || item.owner === 'EVERYONE' || nextItem.owner === 'EVERYONE');
+          // Look for a connector item ONLY in the gap between this item and the next non-connector
           let connectorItem = null;
-          if (showConnector) {
-            for (let j = idx + 1; j < unpinnedItems.length; j++) {
-              const candidate = unpinnedItems[j];
-              if (candidate.connector) { connectorItem = candidate; break; }
-              if (!candidate.connector) break;
+          if (showConnector && nextIdx > idx + 1) {
+            // There are items between this and next — look for connector among them
+            for (let j = idx + 1; j < nextIdx; j++) {
+              if (unpinnedItems[j]?.connector) { connectorItem = unpinnedItems[j]; break; }
             }
+          } else if (showConnector) {
+            // Items are adjacent — check if there's a connector item sorted between them by time
+            connectorItem = null; // no gap, no connector to show
           }
           return (
             <React.Fragment key={item.id}>
               <DayItemCard item={item} isPinned={false} onClick={() => onOpenItem(item.id)} onTogglePin={() => togglePin(item.id)} />
               {showConnector && connectorItem && (
-                <ConnectorPill item={connectorItem} fromItem={item} toItem={nextVisibleNonConnector} onClick={() => onOpenItem(connectorItem.id)} />
+                <ConnectorPill item={connectorItem} fromItem={item} toItem={nextItem} onClick={() => onOpenItem(connectorItem.id)} />
               )}
             </React.Fragment>
           );
@@ -1605,14 +1616,17 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
   const markersByIdRef = useRef({});
   const subMarkersRef = useRef([]);
   const mapsApiRef = useRef(null);
+  const listRef = useRef(null);
+  const cardRefs = useRef({});
+
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState(null);
-  const [expandedId, setExpandedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);       // numbered pin
+  const [expandedId, setExpandedId] = useState(null);       // expanded card
+  const [selectedSubPlace, setSelectedSubPlace] = useState(null); // { itemId, placeId }
   const [groupFilter, setGroupFilter] = useState('all');
-  const [debugInfo, setDebugInfo] = useState([]);
-  const [pinnedById, setPinnedById] = useState({}); // itemId -> { lat, lng } | null
-  const cardRefs = useRef({});
+  const [pinnedById, setPinnedById] = useState({});
+  const [subPinsById, setSubPinsById] = useState({}); // itemId -> [{placeIdx, pos}]
 
   const allItems = useMemo(() =>
     (day.items || []).filter(it => it.type !== 'note' && it.type !== 'document' && !it.connector),
@@ -1624,21 +1638,48 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
     return allItems;
   }, [allItems, groupFilter]);
 
+  const scrollListToItem = (id) => {
+    setTimeout(() => {
+      const el = cardRefs.current[id];
+      const list = listRef.current;
+      if (el && list) {
+        list.scrollTo({ top: el.offsetTop - 8, behavior: 'smooth' });
+      }
+    }, 80);
+  };
+
+  const zoomToItem = (id) => {
+    const pos = pinnedById[id];
+    if (pos && mapInstanceRef.current) {
+      mapInstanceRef.current.panTo(pos);
+      mapInstanceRef.current.setZoom(17);
+      haptic(15);
+    }
+  };
+
   const handlePinTap = (id) => {
     if (selectedId === id) {
-      // Second tap on same pin — zoom in
-      const pos = pinnedById[id];
-      if (pos && mapInstanceRef.current) {
-        mapInstanceRef.current.panTo(pos);
-        mapInstanceRef.current.setZoom(17);
-        haptic(15);
-      }
+      // Second tap — zoom in
+      zoomToItem(id);
     } else {
       setSelectedId(id);
       setExpandedId(id);
-      setTimeout(() => {
-        cardRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }, 100);
+      setSelectedSubPlace(null);
+      scrollListToItem(id);
+      haptic(8);
+    }
+  };
+
+  const handleCardTap = (id) => {
+    if (expandedId === id) {
+      // Second tap on expanded card — zoom in instead of collapsing
+      zoomToItem(id);
+    } else {
+      setSelectedId(id);
+      setExpandedId(id);
+      setSelectedSubPlace(null);
+      scrollListToItem(id);
+      haptic(8);
     }
   };
 
@@ -1648,7 +1689,7 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
     }
   };
 
-  // Update marker visuals when selection changes
+  // Update numbered marker visuals when selection changes
   useEffect(() => {
     const maps = mapsApiRef.current;
     if (!maps) return;
@@ -1658,7 +1699,7 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
         path: maps.SymbolPath.CIRCLE,
         scale: isSelected ? 20 : 14,
         fillColor: '#c03028',
-        fillOpacity: isSelected ? 1 : 0.85,
+        fillOpacity: isSelected ? 1 : 0.8,
         strokeColor: '#fff',
         strokeWeight: isSelected ? 4 : 2,
       });
@@ -1672,19 +1713,18 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
     const map = mapInstanceRef.current;
     if (!maps || !map) return;
 
-    // Clear previous sub-markers
     subMarkersRef.current.forEach(m => m.setMap(null));
     subMarkersRef.current = [];
+    setSubPinsById(prev => ({ ...prev, [expandedId]: [] }));
 
     if (!expandedId) return;
     const expandedItem = filteredItems.find(i => i.id === expandedId);
-    if (!expandedItem || !expandedItem.places || expandedItem.places.length === 0) return;
+    if (!expandedItem?.places?.length) return;
 
     const extractCoords = (url) => {
       if (!url) return null;
       const m = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-      if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
-      return null;
+      return m ? { lat: parseFloat(m[1]), lng: parseFloat(m[2]) } : null;
     };
     const extractQuery = (url) => {
       if (!url) return null;
@@ -1692,62 +1732,91 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
         const m = url.match(/[?&]query=([^&]+)/);
         if (m) return decodeURIComponent(m[1]).replace(/\+/g, ' ');
         const u = new URL(url);
-        const q = u.searchParams.get('query') || u.searchParams.get('q');
-        if (q) return decodeURIComponent(q).replace(/\+/g, ' ');
-      } catch {}
-      return null;
+        return u.searchParams.get('query') || u.searchParams.get('q') || null;
+      } catch { return null; }
     };
 
     const geocoder = new maps.Geocoder();
     const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     let cancelled = false;
+    const newSubPins = [];
 
     (async () => {
-      const subPositions = [];
       for (let i = 0; i < expandedItem.places.length && i < 26; i++) {
         const place = expandedItem.places[i];
-        const coords = extractCoords(place.url || place.mapUrl);
+        const url = place.mapUrl || place.url || '';
+        const coords = extractCoords(url);
+        let pos = null;
+
         if (coords) {
-          subPositions.push({ pos: coords, place, letter: ALPHABET[i] });
-          continue;
+          pos = coords;
+        } else {
+          const q = extractQuery(url);
+          if (q) {
+            pos = await new Promise((res) => {
+              geocoder.geocode({ address: q, region: 'jp' }, (r, s) => {
+                if (s === 'OK' && r?.[0]) res({ lat: r[0].geometry.location.lat(), lng: r[0].geometry.location.lng() });
+                else res(null);
+              });
+            });
+          }
         }
-        const q = extractQuery(place.url || place.mapUrl);
-        if (!q) continue; // SKIP — no precise location, do not put it in middle of country
-        const result = await new Promise((res) => {
-          geocoder.geocode({ address: q, region: 'jp' }, (results, status) => {
-            if (status === 'OK' && results?.[0]) res(results[0].geometry.location);
-            else res(null);
-          });
-        });
+
         if (cancelled) return;
-        if (result) {
-          subPositions.push({ pos: { lat: result.lat(), lng: result.lng() }, place, letter: ALPHABET[i] });
-        }
-      }
+        if (!pos) continue;
 
-      if (cancelled) return;
+        const letter = ALPHABET[i];
+        const isSelectedSub = selectedSubPlace?.itemId === expandedItem.id && selectedSubPlace?.placeIdx === i;
 
-      subPositions.forEach(({ pos, letter }) => {
         const marker = new maps.Marker({
-          position: pos,
-          map,
+          position: pos, map,
           label: { text: letter, color: '#fff', fontSize: '11px', fontWeight: 'bold' },
           icon: {
             path: maps.SymbolPath.CIRCLE,
-            scale: 11,
-            fillColor: '#3a4a8a', // navy/indigo
+            scale: isSelectedSub ? 14 : 11,
+            fillColor: '#00b894', // teal/mint — distinct from red numbered pins
             fillOpacity: 1,
             strokeColor: '#fff',
-            strokeWeight: 2,
+            strokeWeight: isSelectedSub ? 3 : 2,
           },
           zIndex: 500,
+          title: place.name || letter,
         });
+
+        marker.addListener('click', () => {
+          setSelectedSubPlace({ itemId: expandedItem.id, placeIdx: i });
+          haptic(8);
+        });
+
         subMarkersRef.current.push(marker);
-      });
+        newSubPins.push({ placeIdx: i, pos, letter });
+      }
+
+      if (!cancelled) {
+        setSubPinsById(prev => ({ ...prev, [expandedItem.id]: newSubPins }));
+      }
     })();
 
     return () => { cancelled = true; };
-  }, [expandedId, filteredItems]);
+  }, [expandedId]);
+
+  // Update sub-marker visuals when selectedSubPlace changes
+  useEffect(() => {
+    const maps = mapsApiRef.current;
+    if (!maps) return;
+    subMarkersRef.current.forEach((marker, i) => {
+      const isSelected = selectedSubPlace?.placeIdx === i;
+      marker.setIcon({
+        path: maps.SymbolPath.CIRCLE,
+        scale: isSelected ? 14 : 11,
+        fillColor: '#00b894',
+        fillOpacity: 1,
+        strokeColor: '#fff',
+        strokeWeight: isSelected ? 3 : 2,
+      });
+      marker.setZIndex(isSelected ? 600 : 500);
+    });
+  }, [selectedSubPlace]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1767,36 +1836,29 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
           gestureHandling: 'greedy',
         });
         mapInstanceRef.current = map;
-        map.addListener('click', () => { setSelectedId(null); setExpandedId(null); });
+        map.addListener('click', () => { setSelectedId(null); setExpandedId(null); setSelectedSubPlace(null); });
 
         const geocoder = new maps.Geocoder();
 
         const extractCoords = (url) => {
           if (!url) return null;
           const m = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-          if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
-          return null;
+          return m ? { lat: parseFloat(m[1]), lng: parseFloat(m[2]) } : null;
         };
-
-        // Only extract a query from the URL — do NOT fall back to title
         const extractQuery = (url) => {
           if (!url) return null;
           try {
             const m = url.match(/[?&]query=([^&]+)/);
             if (m) return decodeURIComponent(m[1]).replace(/\+/g, ' ');
             const u = new URL(url);
-            const q = u.searchParams.get('query') || u.searchParams.get('q');
-            if (q) return decodeURIComponent(q).replace(/\+/g, ' ');
-          } catch {}
-          return null;
+            return u.searchParams.get('query') || u.searchParams.get('q') || null;
+          } catch { return null; }
         };
 
         const bounds = new maps.LatLngBounds();
         boundsRef.current = bounds;
-        const dbg = [];
         const positions = [];
         const positionsById = {};
-
         markersByIdRef.current = {};
 
         for (let i = 0; i < filteredItems.length; i++) {
@@ -1806,19 +1868,14 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
             positions.push({ pos: coords, item: it, index: i + 1 });
             positionsById[it.id] = coords;
             bounds.extend(new maps.LatLng(coords.lat, coords.lng));
-            dbg.push('✅ ' + it.title);
             continue;
           }
           const query = extractQuery(it.mapUrl);
-          if (!query) {
-            dbg.push('⏭ ' + it.title + ' — no map URL, skipping pin');
-            positionsById[it.id] = null;
-            continue;
-          }
+          if (!query) { positionsById[it.id] = null; continue; }
           const result = await new Promise((res) => {
-            geocoder.geocode({ address: query, region: 'jp' }, (results, status) => {
-              if (status === 'OK' && results?.[0]) res(results[0].geometry.location);
-              else { dbg.push('❌ ' + it.title + ' — ' + status); res(null); }
+            geocoder.geocode({ address: query, region: 'jp' }, (r, s) => {
+              if (s === 'OK' && r?.[0]) res(r[0].geometry.location);
+              else res(null);
             });
           });
           if (cancelled) return;
@@ -1832,7 +1889,6 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
           }
         }
 
-        setDebugInfo(dbg);
         setPinnedById(positionsById);
 
         if (positions.length > 1) {
@@ -1875,14 +1931,15 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
   }, [day.id, groupFilter, filteredItems.length, JSON.stringify(filteredItems.map(i => i.mapUrl + i.title))]);
 
   return (
-    <div className="fade-in">
-      <button onClick={onBack} className="sans flex items-center gap-1 text-xs mb-3 font-semibold" style={{ color: 'var(--accent)' }}>
+    <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 120px)' }}>
+      <button onClick={onBack} className="sans flex items-center gap-1 text-xs mb-3 font-semibold flex-shrink-0" style={{ color: 'var(--accent)' }}>
         <ChevronLeft size={14} /> Back to {day.title}
       </button>
 
-      <div className="flex gap-2 mb-3 items-center">
+      {/* Filter row */}
+      <div className="flex gap-2 mb-3 items-center flex-shrink-0">
         {[['all', 'All'], ['TM', 'T&M'], ['CD', 'C&D']].map(([val, label]) => (
-          <button key={val} onClick={() => { setGroupFilter(val); setSelectedId(null); setExpandedId(null); }}
+          <button key={val} onClick={() => { setGroupFilter(val); setSelectedId(null); setExpandedId(null); setSelectedSubPlace(null); }}
             className={"filter-pill sans " + (groupFilter === val ? 'active' : '')}>{label}</button>
         ))}
         <div className="flex-1" />
@@ -1900,19 +1957,14 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
         </div>
       ) : (
         <>
-          {loading && <div className="sans text-sm text-center py-2" style={{ color: 'var(--text-soft)' }}>Placing pins…</div>}
-          <div ref={mapRef} style={{ height: 280, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--card-border)', marginBottom: 12 }} />
+          {/* Sticky map */}
+          <div className="flex-shrink-0 mb-3">
+            {loading && <div className="sans text-sm text-center py-2" style={{ color: 'var(--text-soft)' }}>Placing pins…</div>}
+            <div ref={mapRef} style={{ height: 260, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--card-border)' }} />
+          </div>
 
-          {debugInfo.some(d => d.startsWith('❌')) && (
-            <div className="mb-3 p-3 rounded-xl sans" style={{ background: 'var(--paper)', border: '1px solid var(--card-border)' }}>
-              <div className="font-bold text-xs mb-1" style={{ color: 'var(--accent)' }}>Some pins failed</div>
-              {debugInfo.filter(d => d.startsWith('❌')).map((d, i) => (
-                <div key={i} className="text-xs" style={{ color: 'var(--text-soft)' }}>{d}</div>
-              ))}
-            </div>
-          )}
-
-          <div className="space-y-2">
+          {/* Scrollable list below map */}
+          <div ref={listRef} style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }} className="space-y-2 pb-4">
             {filteredItems.map((it, i) => {
               const isExpanded = expandedId === it.id;
               const isSelected = selectedId === it.id;
@@ -1922,14 +1974,13 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
                 <div key={it.id} ref={el => cardRefs.current[it.id] = el}
                   className="rounded-xl card-shadow overflow-hidden"
                   style={{ background: 'var(--card)', border: isSelected ? '2px solid var(--accent)' : '1px solid var(--card-border)' }}>
-                  <button onClick={() => { if (isExpanded) { setExpandedId(null); setSelectedId(null); } else handlePinTap(it.id); }}
-                    className="w-full p-3 flex items-center gap-3 text-left">
+                  <button onClick={() => handleCardTap(it.id)} className="w-full p-3 flex items-center gap-3 text-left">
                     <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center sans font-bold text-xs"
                       style={{ background: isSelected ? 'var(--accent)' : 'rgba(192,48,40,0.1)', color: isSelected ? 'var(--bg)' : 'var(--accent)' }}>{i + 1}</div>
                     <Icon size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
                     <div className="flex-1 min-w-0">
                       <div className="sans font-bold text-sm truncate" style={{ color: 'var(--primary)' }}>{it.title}</div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         {it.time && <div className="sans text-xs" style={{ color: 'var(--text-soft)' }}>{it.time}</div>}
                         {!hasLocation && <div className="sans text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ background: 'rgba(192,48,40,0.1)', color: 'var(--accent)' }}>No location</div>}
                       </div>
@@ -1937,6 +1988,7 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
                     <StatusChip status={it.status} />
                     {isExpanded ? <ChevronUp size={14} style={{ color: 'var(--text-soft)' }} /> : <ChevronDown size={14} style={{ color: 'var(--text-soft)' }} />}
                   </button>
+
                   {isExpanded && (
                     <div className="px-4 pb-4 pt-1 border-t" style={{ borderColor: 'var(--card-border)' }}>
                       {it.note && <div className="sans text-sm mt-2 leading-relaxed" style={{ color: 'var(--text)' }}>{it.note}</div>}
@@ -1945,20 +1997,41 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
                           {it.owner === 'TM' ? 'Tim & Michelle' : 'Caroline & David'}
                         </div>
                       )}
+
+                      {/* Sub-places with lettered pins */}
                       {it.places && it.places.length > 0 && (
                         <div className="mt-3">
-                          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-1" style={{ color: 'var(--accent)' }}>Places</div>
+                          <div className="sans text-[10px] uppercase tracking-widest font-bold mb-2" style={{ color: 'var(--accent)' }}>Places</div>
                           <div className="space-y-1">
-                            {it.places.slice(0, 26).map((p, idx) => (
-                              <div key={p.id} className="flex items-center gap-2">
-                                <div className="flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center sans font-bold text-[10px]" style={{ background: '#3a4a8a', color: '#fff' }}>{String.fromCharCode(65 + idx)}</div>
-                                <span className="sans text-sm flex-1 min-w-0 truncate" style={{ color: 'var(--text)' }}>{p.name || p.title || 'Untitled'}</span>
-                                {(p.url || p.mapUrl) && <a href={p.url || p.mapUrl} target="_blank" rel="noreferrer" className="sans text-xs font-semibold" style={{ color: 'var(--accent)' }}>Open</a>}
-                              </div>
-                            ))}
+                            {it.places.slice(0, 26).map((p, idx) => {
+                              const isSubSelected = selectedSubPlace?.itemId === it.id && selectedSubPlace?.placeIdx === idx;
+                              return (
+                                <div key={p.id || idx}
+                                  onClick={() => setSelectedSubPlace(isSubSelected ? null : { itemId: it.id, placeIdx: idx })}
+                                  className="rounded-lg p-2 cursor-pointer transition"
+                                  style={{ background: isSubSelected ? 'rgba(0, 184, 148, 0.1)' : 'var(--paper)', border: isSubSelected ? '1px solid #00b894' : '1px solid var(--card-border)' }}>
+                                  <div className="flex items-center gap-2">
+                                    <div className="flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center sans font-bold text-[10px]"
+                                      style={{ background: '#00b894', color: '#fff' }}>
+                                      {String.fromCharCode(65 + idx)}
+                                    </div>
+                                    <span className="sans text-sm font-semibold flex-1 min-w-0" style={{ color: 'var(--primary)' }}>{p.name || 'Untitled'}</span>
+                                    {(p.mapUrl || p.url) && (
+                                      <a href={p.mapUrl || p.url} target="_blank" rel="noreferrer"
+                                        onClick={e => e.stopPropagation()}
+                                        className="sans text-xs font-semibold" style={{ color: 'var(--accent)' }}>Open</a>
+                                    )}
+                                  </div>
+                                  {isSubSelected && p.note && (
+                                    <div className="sans text-xs mt-2 leading-relaxed" style={{ color: 'var(--text)' }}>{p.note}</div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       )}
+
                       <div className="flex gap-2 mt-3 flex-wrap">
                         {it.mapUrl && (
                           <a href={it.mapUrl} target="_blank" rel="noreferrer"
@@ -1986,34 +2059,6 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-/* ========================= CONNECTOR PILL ========================= */
-const TRANSPORT_MODES = {
-  walk:    { icon: '🚶', label: 'Walk',    g: 'walking' },
-  transit: { icon: '🚇', label: 'Transit', g: 'transit' },
-  taxi:    { icon: '🚕', label: 'Taxi',    g: 'driving' },
-  drive:   { icon: '🚗', label: 'Drive',   g: 'driving' },
-  boat:    { icon: '🚢', label: 'Boat',    g: 'transit' },
-  train:   { icon: '🚂', label: 'Train',   g: 'transit' },
-};
-
-function ConnectorPill({ item, fromItem, toItem, onClick }) {
-  const mode = TRANSPORT_MODES[item.mode] || TRANSPORT_MODES.transit;
-  const duration = item.duration ? `${item.duration} min` : '—';
-  const fromLabel = item.fromName || fromItem?.title || 'From';
-  const toLabel = item.toName || toItem?.title || 'To';
-  return (
-    <div className="connector-pill-wrap">
-      <div className="connector-pill-line" />
-      <button className="connector-pill" onClick={onClick}>
-        <span className="mode-icon">{mode.icon}</span>
-        <span className="mode-meta">{duration}</span>
-        <span style={{ opacity: 0.7 }}>· {fromLabel.length > 18 ? fromLabel.slice(0, 18) + '…' : fromLabel} → {toLabel.length > 18 ? toLabel.slice(0, 18) + '…' : toLabel}</span>
-      </button>
-      <div className="connector-pill-line" />
     </div>
   );
 }
