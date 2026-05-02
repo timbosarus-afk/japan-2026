@@ -2565,23 +2565,33 @@ function ConnectorEditor({ form, setForm, dayItems }) {
 /* ========================= GOOGLE DIRECTIONS CALCULATOR ========================= */
 async function calculateRoute(fromUrl, toUrl, mode) {
   const maps = await loadGoogleMaps();
+
   const extractCoords = (url) => {
+    if (!url) return null;
     const m = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
     return m ? { lat: parseFloat(m[1]), lng: parseFloat(m[2]) } : null;
   };
+
   const extractQuery = (url) => {
+    if (!url) return null;
     try {
       const m = url.match(/[?&]query=([^&]+)/);
       if (m) return decodeURIComponent(m[1]).replace(/\+/g, ' ');
       const u = new URL(url);
-      return u.searchParams.get('query') || u.searchParams.get('q');
+      return u.searchParams.get('query') || u.searchParams.get('q') || null;
     } catch { return null; }
   };
-  const resolve = async (url, fallbackTitle) => {
+
+  // Always resolve to a LatLng via coordinates or geocoding
+  const resolve = async (url, fallbackName) => {
+    // Try direct coordinates first
     const coords = extractCoords(url);
     if (coords) return new maps.LatLng(coords.lat, coords.lng);
-    const q = extractQuery(url) || (fallbackTitle ? `${fallbackTitle} Japan` : null);
+
+    // Try geocoding the query from the URL
+    const q = extractQuery(url) || (fallbackName ? `${fallbackName} Tokyo Japan` : null);
     if (!q) return null;
+
     return new Promise((res) => {
       const g = new maps.Geocoder();
       g.geocode({ address: q, region: 'jp' }, (r, status) => {
@@ -2590,9 +2600,10 @@ async function calculateRoute(fromUrl, toUrl, mode) {
       });
     });
   };
+
   const origin = await resolve(fromUrl);
   const destination = await resolve(toUrl);
-  if (!origin || !destination) throw new Error('Could not resolve From or To location.');
+  if (!origin || !destination) throw new Error('Could not resolve locations. Try adding map URLs with coordinates.');
 
   const ds = new maps.DirectionsService();
   const gMode = TRANSPORT_MODES[mode]?.g || 'transit';
@@ -2607,17 +2618,21 @@ async function calculateRoute(fromUrl, toUrl, mode) {
         const totalMin = Math.round(leg.duration.value / 60);
         const distanceKm = +(leg.distance.value / 1000).toFixed(1);
 
-        // Extract individual steps for the leg breakdown
+        // Extract top-level steps only, skip trivial ones, cap at 5
         const legs = [];
         if (leg.steps) {
-          leg.steps.forEach(step => {
+          for (const step of leg.steps) {
             const stepMin = Math.round(step.duration.value / 60);
-            if (stepMin < 1) return; // skip trivial steps
+            if (stepMin < 2) continue; // skip trivial steps
             if (step.travel_mode === 'WALKING') {
-              legs.push({ type: 'WALKING', icon: '🚶', durationMin: stepMin });
+              // Merge consecutive walk steps
+              if (legs.length > 0 && legs[legs.length - 1].type === 'WALKING') {
+                legs[legs.length - 1].durationMin += stepMin;
+              } else {
+                legs.push({ type: 'WALKING', icon: '🚶', durationMin: stepMin });
+              }
             } else if (step.travel_mode === 'TRANSIT' && step.transit) {
-              const t = step.transit;
-              const line = t.line;
+              const line = step.transit.line;
               legs.push({
                 type: 'TRANSIT',
                 icon: '🚇',
@@ -2626,12 +2641,13 @@ async function calculateRoute(fromUrl, toUrl, mode) {
                 lineColor: line?.color ? `#${line.color}` : '#1e2a4a',
               });
             }
-          });
+            if (legs.length >= 5) break; // cap at 5 legs
+          }
         }
 
         res({ durationMin: totalMin, distanceKm, legs });
       } else {
-        rej(new Error('Directions API: ' + status));
+        rej(new Error('Directions API: ' + status + '. Try using map URLs that contain coordinates (@lat,lng).'));
       }
     });
   });
