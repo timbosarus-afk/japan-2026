@@ -2388,6 +2388,35 @@ function ItemDetailPage({ data, dayId, itemId, onBack, onSave }) {
   );
 }
 
+/* ========================= CONNECTOR PILL ========================= */
+const TRANSPORT_MODES = {
+  walk:    { icon: '🚶', label: 'Walk',    g: 'walking' },
+  transit: { icon: '🚇', label: 'Transit', g: 'transit' },
+  taxi:    { icon: '🚕', label: 'Taxi',    g: 'driving' },
+  drive:   { icon: '🚗', label: 'Drive',   g: 'driving' },
+  boat:    { icon: '🚢', label: 'Boat',    g: 'transit' },
+  train:   { icon: '🚂', label: 'Train',   g: 'transit' },
+};
+
+function ConnectorPill({ item, fromItem, toItem, onClick }) {
+  const mode = TRANSPORT_MODES[item.mode] || TRANSPORT_MODES.transit;
+  const duration = item.duration ? `${item.duration} min` : '—';
+  const fromLabel = item.fromName || fromItem?.title || 'From';
+  const toLabel = item.toName || toItem?.title || 'To';
+  const truncate = (s, n) => s && s.length > n ? s.slice(0, n) + '…' : (s || '');
+  return (
+    <div className="connector-pill-wrap">
+      <div className="connector-pill-line" />
+      <button className="connector-pill" onClick={onClick}>
+        <span className="mode-icon">{mode.icon}</span>
+        <span className="mode-meta">{duration}</span>
+        <span style={{ opacity: 0.7 }}>· {truncate(fromLabel, 16)} → {truncate(toLabel, 16)}</span>
+      </button>
+      <div className="connector-pill-line" />
+    </div>
+  );
+}
+
 /* ========================= CONNECTOR EDITOR ========================= */
 function ConnectorEditor({ form, setForm, dayItems }) {
   const set = (k, v) => setForm({ ...form, [k]: v });
