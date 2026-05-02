@@ -902,3 +902,74 @@ button[aria-label] { min-width: 36px; }
 }
 .place-row-btn:active { transform: scale(0.9); }
 .place-row-btn.danger { color: var(--accent); }
+
+/* ============ CONNECTOR PILL REDESIGN (Round 9) ============ */
+.connector-pill-new {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 14px;
+  background: var(--paper);
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s;
+  max-width: 85%;
+  text-align: center;
+}
+.connector-pill-new:active { transform: scale(0.97); background: var(--card); }
+
+.connector-pill-legs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.connector-leg-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.connector-arrow {
+  color: var(--text-soft);
+  font-weight: 400;
+}
+
+.connector-time {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.connector-line {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+}
+
+.connector-pill-total {
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  color: var(--text-soft);
+  font-weight: 500;
+}
+
+.connector-tap {
+  font-size: 11px;
+  color: var(--text-soft);
+  font-style: italic;
+}
+
+[data-large-text="on"] .connector-pill-legs { font-size: 15px; }
+[data-large-text="on"] .connector-line { font-size: 12px; }
