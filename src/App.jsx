@@ -194,13 +194,15 @@ function migrate(data) {
   });
   d.packingCD = (d.packingCD || []).map(p => ({ ...p, owner: 'CD', bagId: p.bagId || '', note: p.note || '', quantityCurrent: p.quantityCurrent || 0, quantityTotal: p.quantityTotal || 0 }));
 
-  // Merge new packing items from TRIP_DATA that aren't already saved (match by text)
-  // Use deletedPacking tombstone list to prevent re-injecting deleted items
+  // Merge new packing items from TRIP_DATA — match on ID first, then text
+  // ID-based matching means renames are safe (renamed item keeps its ID, original not re-injected)
   d.deletedPacking = d.deletedPacking || [];
   d.deletedPackingCD = d.deletedPackingCD || [];
   const deletedTexts = new Set(d.deletedPacking.map(t => t.toLowerCase().trim()));
+  const existingIds = new Set(d.packing.map(p => p.id));
   const existingTexts = new Set(d.packing.map(p => p.text.toLowerCase().trim()));
   const newItems = TRIP_DATA.packing.filter(p =>
+    !existingIds.has(p.id) &&
     !existingTexts.has(p.text.toLowerCase().trim()) &&
     !deletedTexts.has(p.text.toLowerCase().trim())
   );
@@ -853,6 +855,18 @@ function SettingsPanel({ data, largeText, setLargeText, theme, setTheme, confirm
     if (!confirm('Delete this bag? Items in it will become unassigned.')) return;
     onSave({ ...data, bags: data.bags.filter(b => b.id !== id) });
   };
+  const moveBagUp = (idx) => {
+    if (idx === 0) return;
+    const bags = [...(data.bags || [])];
+    [bags[idx - 1], bags[idx]] = [bags[idx], bags[idx - 1]];
+    onSave({ ...data, bags });
+  };
+  const moveBagDown = (idx) => {
+    const bags = [...(data.bags || [])];
+    if (idx >= bags.length - 1) return;
+    [bags[idx], bags[idx + 1]] = [bags[idx + 1], bags[idx]];
+    onSave({ ...data, bags });
+  };
 
   // Daily essentials
   const essentials = data.dailyEssentials || [];
@@ -1068,12 +1082,16 @@ function SettingsPanel({ data, largeText, setLargeText, theme, setTheme, confirm
           </div>
           <div className="sans text-[11px] mb-2" style={{ color: 'var(--text-soft)' }}>Bags are used in the Packing tab to organise items.</div>
           <div className="space-y-2">
-            {(data.bags || []).map(bag => (
+            {(data.bags || []).map((bag, idx) => (
               <div key={bag.id} className="p-3 rounded-xl flex items-center gap-3" style={{ background: 'var(--card)', border: '1px solid var(--card-border)' }}>
                 <span className="text-2xl">{bag.icon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="sans font-bold text-sm" style={{ color: 'var(--text)' }}>{bag.name}</div>
                   <div className="sans text-[10px]" style={{ color: 'var(--text-soft)' }}>{bag.owner === 'TM' ? 'Tim & Michelle' : 'Caroline & David'}</div>
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <button onClick={() => moveBagUp(idx)} disabled={idx === 0} className="sans text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--paper)', color: idx === 0 ? 'var(--text-soft)' : 'var(--primary)', opacity: idx === 0 ? 0.3 : 1 }}>▲</button>
+                  <button onClick={() => moveBagDown(idx)} disabled={idx === (data.bags || []).length - 1} className="sans text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--paper)', color: idx === (data.bags || []).length - 1 ? 'var(--text-soft)' : 'var(--primary)', opacity: idx === (data.bags || []).length - 1 ? 0.3 : 1 }}>▼</button>
                 </div>
                 <button onClick={() => setBagBeingEdited(bag)} className="sans text-[11px] font-semibold" style={{ color: 'var(--accent)' }}>Edit</button>
                 <button onClick={() => deleteBag(bag.id)} className="btn-delete" style={{ width: 32, height: 32 }}><Trash2 size={14} /></button>
@@ -1690,8 +1708,12 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
       const el = cardRefs.current[id];
       const list = listRef.current;
       if (el && list) {
-        // Always scroll to top of list regardless of position - even leaves blank space below
-        list.scrollTo({ top: el.offsetTop, behavior: 'smooth' });
+        // offsetTop is relative to offsetParent which may not be the list container
+        // Use getBoundingClientRect to get position relative to the list container
+        const elRect = el.getBoundingClientRect();
+        const listRect = list.getBoundingClientRect();
+        const relativeTop = elRect.top - listRect.top + list.scrollTop;
+        list.scrollTo({ top: relativeTop, behavior: 'smooth' });
       }
     }, 150);
   };
@@ -1834,6 +1856,14 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
         marker.addListener('click', () => {
           setSelectedSubPlace({ itemId: expandedItem.id, placeIdx: i });
           haptic(8);
+          // Fit map to show both the parent numbered pin and this sub-place
+          const parentPos = pinnedById[expandedItem.id];
+          if (parentPos && pos && mapInstanceRef.current && mapsApiRef.current) {
+            const bounds = new mapsApiRef.current.LatLngBounds();
+            bounds.extend(new mapsApiRef.current.LatLng(parentPos.lat, parentPos.lng));
+            bounds.extend(new mapsApiRef.current.LatLng(pos.lat, pos.lng));
+            mapInstanceRef.current.fitBounds(bounds, 60);
+          }
         });
 
         subMarkersRef.current.push(marker);
@@ -2064,7 +2094,20 @@ function DayMapPage({ day, dayIndex, onBack, onNavigateToItem }) {
                               const isSubSelected = selectedSubPlace?.itemId === it.id && selectedSubPlace?.placeIdx === idx;
                               return (
                                 <div key={p.id || idx}
-                                  onClick={() => setSelectedSubPlace(isSubSelected ? null : { itemId: it.id, placeIdx: idx })}
+                                  onClick={() => {
+                                    if (isSubSelected) { setSelectedSubPlace(null); return; }
+                                    setSelectedSubPlace({ itemId: it.id, placeIdx: idx });
+                                    // Fit map to show parent pin + this sub-place
+                                    const subPins = subPinsById[it.id] || [];
+                                    const subPin = subPins.find(sp => sp.placeIdx === idx);
+                                    const parentPos = pinnedById[it.id];
+                                    if (subPin && parentPos && mapInstanceRef.current && mapsApiRef.current) {
+                                      const bounds = new mapsApiRef.current.LatLngBounds();
+                                      bounds.extend(new mapsApiRef.current.LatLng(parentPos.lat, parentPos.lng));
+                                      bounds.extend(new mapsApiRef.current.LatLng(subPin.pos.lat, subPin.pos.lng));
+                                      mapInstanceRef.current.fitBounds(bounds, 60);
+                                    }
+                                  }}
                                   className="rounded-lg p-2 cursor-pointer transition"
                                   style={{ background: isSubSelected ? 'rgba(0, 184, 148, 0.1)' : 'var(--paper)', border: isSubSelected ? '1px solid #00b894' : '1px solid var(--card-border)' }}>
                                   <div className="flex items-center gap-2">
@@ -3892,6 +3935,17 @@ function PackingTab({ data, onSave }) {
   const [newText, setNewText] = useState('');
   const [newBagId, setNewBagId] = useState('');
   const [detailItem, setDetailItem] = useState(null);
+  const packingScrollY = useRef(0);
+
+  const openDetail = (p) => {
+    packingScrollY.current = window.scrollY;
+    setDetailItem(p);
+  };
+  const closeDetail = () => {
+    setDetailItem(null);
+    // Restore scroll position after keyboard dismisses
+    setTimeout(() => window.scrollTo(0, packingScrollY.current), 100);
+  };
 
   const list = activeCouple === 'TM' ? (data.packing || []) : (data.packingCD || []);
   const bags = (data.bags || []).filter(b => b.owner === activeCouple);
@@ -3933,7 +3987,7 @@ function PackingTab({ data, onSave }) {
   const moveBag = (id, bagId) => updateList(list.map(p => p.id === id ? { ...p, bagId } : p));
   const updateItem = (updated) => {
     updateList(list.map(p => p.id === updated.id ? updated : p));
-    setDetailItem(null);
+    closeDetail();
   };
   const addItem = () => {
     if (!newText.trim() || !newBagId) return;
@@ -4051,8 +4105,6 @@ function PackingTab({ data, onSave }) {
 
       <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={list.map(p => p.id)} strategy={verticalListSortingStrategy}>
-          <DndContext collisionDetection={closestCenter} onDragEnd={handleBagDragEnd}>
-          <SortableContext items={bags.map(b => b.id)} strategy={verticalListSortingStrategy}>
           <div className="space-y-2">
             {bags.map(bag => {
               const bagItems = filtered.filter(p => p.bagId === bag.id);
@@ -4061,8 +4113,7 @@ function PackingTab({ data, onSave }) {
               const hasSearchMatch = searchQuery.trim() && bagItems.length > 0;
               const isCollapsed = hasSearchMatch ? false : collapsed[bag.id];
               return (
-                <SortableBagSection key={bag.id} id={bag.id}>
-                  <div className="bag-section">
+                <div key={bag.id} className="bag-section">
                   <button onClick={() => setCollapsed({ ...collapsed, [bag.id]: !isCollapsed })} className="bag-section-header">
                     <span className="text-2xl">{bag.icon}</span>
                     <div className="flex-1 min-w-0 text-left">
@@ -4078,14 +4129,13 @@ function PackingTab({ data, onSave }) {
                       ) : (
                         <div>
                           {bagItems.map(p => (
-                            <SortablePackingRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} onOpenDetail={() => setDetailItem(p)} />
+                            <SortablePackingRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} onOpenDetail={() => openDetail(p)} />
                           ))}
                         </div>
                       )}
                     </div>
                   )}
-                  </div>
-                </SortableBagSection>
+                </div>
               );
             })}
 
@@ -4108,7 +4158,7 @@ function PackingTab({ data, onSave }) {
                   {!isCollapsed && (
                     <div className="bag-section-body">
                       {unassigned.map(p => (
-                        <SortablePackingRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} onOpenDetail={() => setDetailItem(p)} />
+                        <SortablePackingRow key={p.id} p={p} bags={bags} onToggleGot={() => toggleGot(p.id)} onTogglePacked={() => togglePacked(p.id)} onMoveBag={(bagId) => moveBag(p.id, bagId)} onRemove={() => remove(p.id)} onOpenDetail={() => openDetail(p)} />
                       ))}
                     </div>
                   )}
@@ -4116,8 +4166,6 @@ function PackingTab({ data, onSave }) {
               );
             })()}
           </div>
-          </SortableContext>
-          </DndContext>
         </SortableContext>
       </DndContext>
 
@@ -4139,7 +4187,7 @@ function PackingTab({ data, onSave }) {
       )}
 
       {detailItem && (
-        <PackingItemDetailModal item={detailItem} bags={bags} onSave={updateItem} onClose={() => setDetailItem(null)} />
+        <PackingItemDetailModal item={detailItem} bags={bags} onSave={updateItem} onClose={closeDetail} />
       )}
     </div>
   );
