@@ -217,15 +217,41 @@ function migrate(data) {
     return day;
   });
 
-  // One-time migration: add Tokyo Cruise booking if not already present
-  if (!(d.bookings || []).find(b => b.id === 'b_cruise')) {
-    const cruiseBooking = { id: 'b_cruise', title: 'Tokyo Cruise — Hotaluna/Himiko boat', detail: 'Asakusa → Toyosu (Asakusa-Odaiba Direct Line)', date: '2026-05-12', status: 'tbd', notes: 'Book via Tokyo Cruise website. Departs Asakusa Pier 11:30. ~45 min. Aiden naps on the boat.', files: [] };
-    d.bookings = [cruiseBooking, ...(d.bookings || [])];
+  // One-time migration: swap Day 2 and Day 7 — Sensoji moves to Day 7, Small Worlds to Day 2
+  // Detect by checking if Day 2 still has the old Asakusa/Toyosu content
+  const d2 = d.days.find(x => x.id === 'd2');
+  const d7 = d.days.find(x => x.id === 'd7');
+  if (d2 && d7 && (d2.title.includes('Asakusa') || d2.title.includes('Sensō'))) {
+    const newD2 = TRIP_DATA.days.find(x => x.id === 'd2');
+    const newD7 = TRIP_DATA.days.find(x => x.id === 'd7');
+    if (newD2 && newD7) {
+      d.days = d.days.map(day => {
+        if (day.id === 'd2') return { ...newD2, rating: day.rating || 0, diary: day.diary || '', pinned: day.pinned || [], wishes: day.wishes || [], ideas: day.ideas || [] };
+        if (day.id === 'd7') return { ...newD7, rating: day.rating || 0, diary: day.diary || '', pinned: day.pinned || [], wishes: day.wishes || [], ideas: day.ideas || [] };
+        return day;
+      });
+    }
   }
 
-  // One-time migration: update aidenStatus for Day 2
-  if (d.aidenStatus && d.aidenStatus['2026-05-12'] === 'All together') {
-    d.aidenStatus['2026-05-12'] = 'All together am, Grandparents pm (Small Worlds)';
+  // One-time migration: add Tokyo Cruise booking if not already present
+  if (!(d.bookings || []).find(b => b.id === 'b_cruise')) {
+    const cruiseBooking = { id: 'b_cruise', title: 'Tokyo Cruise — Hotaluna/Himiko boat', detail: 'Asakusa → Toyosu (Asakusa-Odaiba Direct Line)', date: '2026-05-17', status: 'tbd', notes: 'Book via Tokyo Cruise website. Departs Asakusa Pier 11:30. ~45 min. Aiden naps on the boat.', files: [] };
+    d.bookings = [cruiseBooking, ...(d.bookings || [])];
+  } else {
+    // Update existing cruise booking date if it's still on Day 2
+    d.bookings = (d.bookings || []).map(b =>
+      b.id === 'b_cruise' && b.date === '2026-05-12' ? { ...b, date: '2026-05-17' } : b
+    );
+  }
+
+  // One-time migration: update aidenStatus for Day 2/7 swap
+  if (d.aidenStatus) {
+    if (d.aidenStatus['2026-05-12'] === 'All together am, Grandparents pm (Small Worlds)') {
+      d.aidenStatus['2026-05-12'] = 'Grandparents (Small Worlds am)';
+    }
+    if (d.aidenStatus['2026-05-17'] === 'Grandparents (Small Worlds am)') {
+      d.aidenStatus['2026-05-17'] = 'All together am, Grandparents pm (Small Worlds)';
+    }
   }
 
   return d;
@@ -2552,8 +2578,11 @@ function ConnectorPill({ item, onClick, showOwnerBadge }) {
                   </span>
                 );
               })}
+              {showOwnerBadge && ownerLabel && (
+                <span className="connector-line" style={{ background: 'var(--accent)', color: 'var(--bg)' }}>{ownerLabel}</span>
+              )}
             </div>
-            {duration && <div className="connector-pill-total">{duration} min total{showOwnerBadge && ownerLabel ? ` · ${ownerLabel}` : ''}</div>}
+            {duration && <div className="connector-pill-total">{duration} min total</div>}
           </>
         ) : (
           <div className="connector-pill-legs">
@@ -4043,8 +4072,8 @@ function PackingTab({ data, onSave }) {
         <button onClick={() => setActiveCouple('CD')} className={`couple-tab ${activeCouple === 'CD' ? 'active' : ''}`}>Caroline & David</button>
       </div>
 
-      {/* Search bar */}
-      <div className="relative mb-3">
+      {/* Search bar — sticky */}
+      <div className="relative mb-3 sticky top-14 z-10 py-1" style={{ background: 'var(--bg)' }}>
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-soft)' }} />
         <input
           value={searchQuery}
