@@ -1,76 +1,45 @@
-// api/deploy.js — Vercel serverless function
-// Writes App.jsx directly via GitHub API using stored token
-
+// api/deploy.js
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { secret, content, message } = req.body || {};
-
-  if (secret !== process.env.DEPLOY_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  if (!content) {
-    return res.status(400).json({ error: 'content required' });
-  }
+  const { secret, message } = req.body || {};
+  if (secret !== process.env.DEPLOY_SECRET) return res.status(401).json({ error: 'Unauthorized' });
 
   try {
-    const ghToken = process.env.GITHUB_TOKEN;
-    const owner = 'timbosarus-afk';
-    const repo = 'japan-2026';
-    const path = 'src/App.jsx';
-
-    // Get current SHA
-    const shaRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${ghToken}`,
-          'Accept': 'application/vnd.github.v3+json',
-        }
-      }
+    // 1. Read new App.jsx from Supabase
+    const sbRes = await fetch(
+      `${process.env.VITE_SUPABASE_URL}/rest/v1/deployments?id=eq.app-deploy-latest&select=content`,
+      { headers: { 'apikey': process.env.VITE_SUPABASE_ANON_KEY, 'Authorization': `Bearer ${process.env.VITE_SUPABASE_ANON_KEY}` } }
     );
+    const sbData = await sbRes.json();
+    const content = sbData?.[0]?.content;
+    if (!content) return res.status(404).json({ error: 'No pending deployment found in Supabase' });
+
+    // 2. Get current SHA from GitHub
+    const ghHeaders = { 'Authorization': `Bearer ${process.env.GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' };
+    const shaRes = await fetch('https://api.github.com/repos/timbosarus-afk/japan-2026/contents/src/App.jsx', { headers: ghHeaders });
     const shaData = await shaRes.json();
-    const currentSha = shaData.sha;
+    if (!shaData.sha) return res.status(500).json({ error: 'Could not get SHA', detail: shaData });
 
-    if (!currentSha) {
-      return res.status(500).json({ error: 'Could not get SHA', detail: shaData });
-    }
-
-    // Commit new content
+    // 3. Commit to GitHub
     const encoded = Buffer.from(content, 'utf-8').toString('base64');
-    const commitRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
-      {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${ghToken}`,
-          'Accept': 'application/vnd.github.v3+json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: message || 'Deploy via Claude',
-          content: encoded,
-          sha: currentSha,
-          branch: 'main',
-        })
-      }
-    );
-
+    const commitRes = await fetch('https://api.github.com/repos/timbosarus-afk/japan-2026/contents/src/App.jsx', {
+      method: 'PUT',
+      headers: { ...ghHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: message || 'Deploy via Claude', content: encoded, sha: shaData.sha, branch: 'main' })
+    });
     const commitData = await commitRes.json();
 
     if (commitData.commit?.sha) {
-      return res.status(200).json({
-        success: true,
-        commitSha: commitData.commit.sha,
-        message: 'Deployed — Vercel rebuilding in ~60s'
+      // 4. Clean up Supabase
+      await fetch(`${process.env.VITE_SUPABASE_URL}/rest/v1/deployments?id=eq.app-deploy-latest`, {
+        method: 'DELETE',
+        headers: { 'apikey': process.env.VITE_SUPABASE_ANON_KEY, 'Authorization': `Bearer ${process.env.VITE_SUPABASE_ANON_KEY}` }
       });
+      return res.status(200).json({ success: true, commitSha: commitData.commit.sha });
     } else {
       return res.status(500).json({ error: 'Commit failed', detail: commitData });
     }
-
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
