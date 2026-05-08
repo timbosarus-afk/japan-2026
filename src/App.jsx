@@ -217,21 +217,7 @@ function migrate(data) {
     return day;
   });
 
-  // One-time migration: swap Day 2 and Day 7 — Sensoji moves to Day 7, Small Worlds to Day 2
-  // Detect by checking if Day 2 still has the old Asakusa/Toyosu content
-  const d2 = d.days.find(x => x.id === 'd2');
-  const d7 = d.days.find(x => x.id === 'd7');
-  if (d2 && d7 && (d2.title.includes('Asakusa') || d2.title.includes('Sensō'))) {
-    const newD2 = TRIP_DATA.days.find(x => x.id === 'd2');
-    const newD7 = TRIP_DATA.days.find(x => x.id === 'd7');
-    if (newD2 && newD7) {
-      d.days = d.days.map(day => {
-        if (day.id === 'd2') return { ...newD2, rating: day.rating || 0, diary: day.diary || '', pinned: day.pinned || [], wishes: day.wishes || [], ideas: day.ideas || [] };
-        if (day.id === 'd7') return { ...newD7, rating: day.rating || 0, diary: day.diary || '', pinned: day.pinned || [], wishes: day.wishes || [], ideas: day.ideas || [] };
-        return day;
-      });
-    }
-  }
+  // Day 2/7 swap migration removed — swap handled directly in Supabase
 
   // One-time migration: add Tokyo Cruise booking if not already present
   if (!(d.bookings || []).find(b => b.id === 'b_cruise')) {
@@ -504,13 +490,14 @@ export default function App() {
     (async () => {
       try {
         if (isOnline()) {
+          // Always fetch fresh from Supabase when online — never use cache as primary source
           const { data: row, error } = await supabase
             .from('trips').select('data').eq('id', TRIP_ID).maybeSingle();
           if (error) throw error;
           if (row && row.data) {
             const migrated = migrate(row.data);
             setData(migrated);
-            saveCache(migrated);
+            saveCache(migrated); // update cache with latest Supabase data
           } else {
             await supabase.from('trips').insert({ id: TRIP_ID, data: TRIP_DATA });
             setData(TRIP_DATA);
@@ -520,11 +507,13 @@ export default function App() {
           throw new Error('offline');
         }
       } catch (e) {
+        // Only fall back to cache when offline or Supabase unreachable
         const cached = loadCache();
         if (cached?.data) {
           setData(migrate(cached.data));
           setSyncState('error');
         } else {
+          setData(migrate(TRIP_DATA));
           setSyncState('error');
         }
       }
