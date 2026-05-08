@@ -1,44 +1,28 @@
 // api/deploy.js — Vercel serverless function
-// Reads new App.jsx from Supabase deployments table and commits to GitHub
+// Writes App.jsx directly via GitHub API using stored token
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { secret, deployId, message } = req.body || {};
+  const { secret, content, message } = req.body || {};
+
   if (secret !== process.env.DEPLOY_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  if (!deployId) {
-    return res.status(400).json({ error: 'deployId required' });
+  if (!content) {
+    return res.status(400).json({ error: 'content required' });
   }
 
   try {
-    const supabaseUrl = process.env.VITE_SUPABASE_URL;
-    const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY;
-
-    const sbRes = await fetch(
-      `${supabaseUrl}/rest/v1/deployments?id=eq.${deployId}&select=content`,
-      {
-        headers: {
-          'apikey': supabaseKey,
-          'Authorization': `Bearer ${supabaseKey}`,
-        }
-      }
-    );
-    const sbData = await sbRes.json();
-    if (!sbData?.[0]?.content) {
-      return res.status(404).json({ error: 'Deploy content not found in Supabase' });
-    }
-    const newContent = sbData[0].content;
-
     const ghToken = process.env.GITHUB_TOKEN;
     const owner = 'timbosarus-afk';
     const repo = 'japan-2026';
     const path = 'src/App.jsx';
 
+    // Get current SHA
     const shaRes = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
       {
@@ -52,10 +36,11 @@ export default async function handler(req, res) {
     const currentSha = shaData.sha;
 
     if (!currentSha) {
-      return res.status(500).json({ error: 'Could not get current file SHA', detail: shaData });
+      return res.status(500).json({ error: 'Could not get SHA', detail: shaData });
     }
 
-    const encoded = Buffer.from(newContent, 'utf-8').toString('base64');
+    // Commit new content
+    const encoded = Buffer.from(content, 'utf-8').toString('base64');
     const commitRes = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
       {
@@ -73,26 +58,17 @@ export default async function handler(req, res) {
         })
       }
     );
+
     const commitData = await commitRes.json();
 
     if (commitData.commit?.sha) {
-      await fetch(
-        `${supabaseUrl}/rest/v1/deployments?id=eq.${deployId}`,
-        {
-          method: 'DELETE',
-          headers: {
-            'apikey': supabaseKey,
-            'Authorization': `Bearer ${supabaseKey}`,
-          }
-        }
-      );
       return res.status(200).json({
         success: true,
         commitSha: commitData.commit.sha,
-        message: 'Deployed successfully — Vercel will rebuild in ~60s'
+        message: 'Deployed — Vercel rebuilding in ~60s'
       });
     } else {
-      return res.status(500).json({ error: 'GitHub commit failed', detail: commitData });
+      return res.status(500).json({ error: 'Commit failed', detail: commitData });
     }
 
   } catch (err) {
